@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { DndContext, type DragEndEvent, type Modifier } from '@dnd-kit/core';
 import { restrictToWindowEdges } from '@dnd-kit/modifiers';
-import { Clock3, FolderKanban, Layers, Loader2, Play } from 'lucide-react';
+import { ArrowLeftRight, Clock3, FolderKanban, Layers, Loader2, MessageSquare, Pencil, Play, Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import * as api from '../../api';
 import { useFeedback } from '../../contexts/FeedbackContext';
 import { useTemplatesLibrary } from '../../features/templates/hooks/useTemplatesLibrary';
+import { useNavigationGuard } from '../../contexts/NavigationGuardContext';
 import { cn } from '../../lib/utils';
 import { WorkspaceEditorPanel } from './components/WorkspaceEditorPanel';
 import { WorkspaceEmptyState } from './components/WorkspaceEmptyState';
@@ -14,6 +15,9 @@ import { WorkspaceListPanel } from './components/WorkspaceListPanel';
 import { WorkspaceNodeTable } from './components/WorkspaceNodeTable';
 import { WorkspaceRunPanel } from './components/WorkspaceRunPanel';
 import { WorkspaceTemplatePanel } from './components/WorkspaceTemplatePanel';
+import { TeamGallery } from './components/TeamGallery';
+import { resolveTeam } from './teams/teamDefinitions';
+import type { TeamDefinition } from './teams/teamDefinitions';
 import { useWorkspaceCrud } from './hooks/useWorkspaceCrud';
 import { useWorkspaceExecution } from './hooks/useWorkspaceExecution';
 import type {
@@ -216,7 +220,10 @@ function buildWorkspaceAutoConfigPlan(
 export function AgentStudioWorkspaces() {
   const navigate = useNavigate();
   const { confirm } = useFeedback();
+  const { registerGuard } = useNavigationGuard();
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [workspaceMode, setWorkspaceMode] = useState<'quick' | 'advanced'>('quick');
+  const [creatingFromTeam, setCreatingFromTeam] = useState(false);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('canvas');
   const [viewMode, setViewMode] = useState<'canvas' | 'table'>('canvas');
   const [canvasZoom, setCanvasZoom] = useState(1);
@@ -308,6 +315,7 @@ export function AgentStudioWorkspaces() {
     saveWorkspace,
     clearLibraryError,
     onError: message => setError(message),
+    canNavigateToChat: () => confirmUnsavedChanges('open Chat'),
     onNavigateToChat: () => navigate('/chat'),
     onAfterExecute: () => setActiveTab('runs'),
   });
@@ -356,14 +364,8 @@ export function AgentStudioWorkspaces() {
   }, [activeWorkspaceDirty, confirm, unsavedMessage]);
 
   useEffect(() => {
-    const guard = () => confirmUnsavedChanges('leave this page');
-    window.hermesWorkspaceNavigationGuard = guard;
-    return () => {
-      if (window.hermesWorkspaceNavigationGuard === guard) {
-        delete window.hermesWorkspaceNavigationGuard;
-      }
-    };
-  }, [confirmUnsavedChanges]);
+    return registerGuard(() => confirmUnsavedChanges('leave this page'));
+  }, [confirmUnsavedChanges, registerGuard]);
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -478,6 +480,115 @@ export function AgentStudioWorkspaces() {
     await createWorkspace();
   }, [confirmUnsavedChanges, createWorkspace, discardActiveWorkspaceChanges]);
 
+  const createFromTeam = useCallback(async (team: TeamDefinition) => {
+    const canCreate = await confirmUnsavedChanges('create a workspace from a team');
+    if (!canCreate) return;
+
+    const confirmedCreate = await confirm({
+      title: 'Create team workspace',
+      message: `Create "${team.name}" as a saved workspace?\n\nThis is useful for testing, and you can delete it afterwards from Quick Start or Advanced mode.`,
+      confirmLabel: 'Create workspace',
+      cancelLabel: 'Cancel',
+    });
+    if (!confirmedCreate) return;
+
+    discardActiveWorkspaceChanges();
+
+    setCreatingFromTeam(true);
+    setError('');
+    clearLibraryError();
+
+    try {
+      // Load templates if not already loaded
+      const result = await loadTemplates();
+      if (!result.ok) {
+        setError(result.error || 'Could not load agent templates.');
+        return;
+      }
+
+      // Resolve the team: match agents by name
+      const resolved = resolveTeam(team, result.ok ? result.templates : []);
+
+      if (resolved.missingAgents.length > 0) {
+        setError(
+          `Certains agents sont introuvables : ${resolved.missingAgents.join(', ')}. ` +
+          'Utilise "Load bundled" ou "Import default agency" dans la bibliothèque de templates.',
+        );
+        return;
+      }
+
+      if (resolved.ambiguousAgents.length > 0) {
+        const ambiguityDetails = resolved.ambiguousAgents
+          .map(entry => {
+            const candidates = entry.matches
+              .map(match => {
+                const parts = [
+                  match.name,
+                  match.source || 'template',
+                  match.sourcePath || match.slug || match.id,
+                ].filter(Boolean);
+                return parts.join(' · ');
+              })
+              .join(' | ');
+            return `${entry.agentName}: ${candidates}`;
+          })
+          .join('; ');
+
+        setError(
+          `Certains agents sont ambigus : ${ambiguityDetails}. ` +
+          'Renomme, désambiguïse ou supprime les doublons de templates avant de créer cette équipe.',
+        );
+        return;
+      }
+
+      // Build the workspace payload
+      const draft: Partial<AgentWorkspace> = {
+        name: resolved.name,
+        description: resolved.description,
+        pipelineBrief: resolved.pipelineBrief,
+        sharedContext: resolved.sharedContext,
+        commonRules: resolved.commonRules,
+        defaultMode: resolved.defaultMode,
+        nodes: resolved.nodes.map((n) => ({
+          id: n.id,
+          agentId: n.agentId,
+          role: n.role,
+          label: n.label,
+          modelOverride: n.modelOverride || '',
+          skills: n.skills || [],
+          toolsets: n.toolsets || [],
+          position: n.position,
+        })),
+        edges: resolved.edges.map((e) => ({
+          id: `edge_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+          fromNodeId: e.fromNodeId,
+          toNodeId: e.toNodeId,
+          kind: e.kind,
+        })),
+      };
+
+      const newWorkspace = await createWorkspace(draft);
+      if (!newWorkspace) return;
+
+      // Create through the workspace hook so local state and the advanced canvas stay in sync.
+      setWorkspaceMode('advanced');
+      setActiveTab('canvas');
+      setViewMode('canvas');
+      setSelectedEdgeId(null);
+    } catch (createError) {
+      if (typeof createError === 'object' && createError && 'response' in createError) {
+        const response = (createError as { response?: { data?: { error?: string; details?: string } } }).response;
+        setError(response?.data?.error || response?.data?.details || 'Could not create workspace from team.');
+      } else if (createError instanceof Error) {
+        setError(createError.message);
+      } else {
+        setError('Could not create workspace from team.');
+      }
+    } finally {
+      setCreatingFromTeam(false);
+    }
+  }, [confirm, confirmUnsavedChanges, createWorkspace, discardActiveWorkspaceChanges, loadTemplates, clearLibraryError, setError]);
+
   const deleteWorkspaceSafely = useCallback(async () => {
     if (!activeWorkspace) return;
     const confirmed = await confirm({
@@ -507,6 +618,25 @@ export function AgentStudioWorkspaces() {
     }
     setActiveTab(tab);
   }, [activeTab, confirmUnsavedChanges]);
+
+  const openQuickWorkspaceEditor = useCallback(() => {
+    setWorkspaceMode('advanced');
+    setActiveTab('canvas');
+    setViewMode('canvas');
+  }, []);
+
+  const openQuickStart = useCallback(async () => {
+    const canOpen = await confirmUnsavedChanges('return to Quick Start');
+    if (!canOpen) return;
+    setWorkspaceMode('quick');
+  }, [confirmUnsavedChanges]);
+
+  const openQuickWorkspaceInterface = useCallback(async () => {
+    const canOpen = await confirmUnsavedChanges('open the workspace interface');
+    if (!canOpen) return;
+    setWorkspaceMode('advanced');
+    setActiveTab('interface');
+  }, [confirmUnsavedChanges]);
 
   const templatePanelProps = {
     title: 'Templates',
@@ -543,12 +673,141 @@ export function AgentStudioWorkspaces() {
     );
   }
 
+  const heroSection = (
+    <section className="relative overflow-hidden rounded-2xl border border-primary/10 bg-gradient-to-br from-card via-card to-secondary/30 p-5">
+      <div className="absolute right-[-60px] top-[-40px] h-48 w-48 rounded-full bg-primary/8 blur-3xl" />
+      <div className="relative">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground/70 font-medium">
+              Studio
+            </p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">
+              Workspaces
+            </h1>
+            <p className="mt-1 max-w-lg text-sm text-muted-foreground leading-relaxed">
+              {workspaceMode === 'quick'
+                ? 'Pre-built agent teams. Pick one and start.'
+                : 'Multi-agent compositions built from templates.'
+              }
+              {activeWorkspace && workspaceMode === 'advanced' && (
+                <span className="ml-2 text-primary">
+                  Editing <span className="font-medium">{activeWorkspace.name}</span>
+                </span>
+              )}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {activeWorkspace?.updatedAt && workspaceMode === 'advanced' && (
+              <div className="flex-shrink-0 text-right hidden sm:block">
+                <p className="text-[10px] text-muted-foreground/60">last saved</p>
+                <p className="text-xs text-muted-foreground font-mono">
+                  {new Date(activeWorkspace.updatedAt).toLocaleString()}
+                </p>
+              </div>
+            )}
+            {/* Toggle Quick / Advanced */}
+            <button
+              onClick={() => setWorkspaceMode(current => current === 'quick' ? 'advanced' : 'quick')}
+              className={cn(
+                'inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-all',
+                workspaceMode === 'quick'
+                  ? 'border-primary bg-primary text-primary-foreground hover:bg-primary/90'
+                  : 'border-border text-foreground hover:bg-muted',
+              )}
+            >
+              <ArrowLeftRight size={14} />
+              {workspaceMode === 'quick' ? 'Advanced' : 'Quick Start'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+
+  if (workspaceMode === 'quick') {
+    return (
+      <div className="space-y-4">
+        {heroSection}
+        {activeWorkspace && (
+          <section className="rounded-2xl border border-border bg-card/70 p-4 shadow-sm">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
+                  Active test workspace
+                </p>
+                <h2 className="mt-1 truncate text-base font-semibold text-foreground">
+                  {activeWorkspace.name}
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  This team has already been saved as a workspace. Open it to inspect the canvas, or delete it when the test is done.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={openQuickWorkspaceEditor}
+                  className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted"
+                >
+                  <Pencil size={15} />
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void openQuickWorkspaceInterface();
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted"
+                >
+                  <MessageSquare size={15} />
+                  Open interface
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void deleteWorkspaceSafely();
+                  }}
+                  className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10"
+                >
+                  <Trash2 size={15} />
+                  Delete test
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+        {displayError && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {displayError}
+          </div>
+        )}
+        {creatingFromTeam ? (
+          <div className="flex min-h-[320px] items-center justify-center">
+            <Loader2 size={20} className="animate-spin text-muted-foreground" />
+          </div>
+        ) : (
+          <TeamGallery
+            agents={agents}
+            loading={importing}
+            onSelectTeam={createFromTeam}
+            onLoadBundled={() => {
+              void loadBundledAgencyCatalog();
+            }}
+          />
+        )}
+      </div>
+    );
+  }
+
   if (workspaces.length === 0) {
     return (
-      <WorkspaceEmptyState
-        onCreateWorkspace={() => { void createWorkspaceSafely(); }}
-        onImportBundled={() => { void loadBundledAgencyCatalog(); }}
-      />
+      <div className="space-y-4">
+        {heroSection}
+        <WorkspaceEmptyState
+          onCreateWorkspace={() => { void createWorkspaceSafely(); }}
+          onImportBundled={() => { void loadBundledAgencyCatalog(); }}
+        />
+      </div>
     );
   }
 
@@ -556,37 +815,7 @@ export function AgentStudioWorkspaces() {
     <DndContext onDragEnd={handleDragEnd} modifiers={[restrictToWindowEdges, zoomModifier]}>
       <div className="space-y-4">
         {/* ── Header: hero + metrics ── */}
-        <section className="relative overflow-hidden rounded-2xl border border-primary/10 bg-gradient-to-br from-card via-card to-secondary/30 p-5">
-          <div className="absolute right-[-60px] top-[-40px] h-48 w-48 rounded-full bg-primary/8 blur-3xl" />
-          <div className="relative">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-              <div className="flex-1 min-w-0">
-                <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground/70 font-medium">
-                  Studio
-                </p>
-                <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">
-                  Workspaces
-                </h1>
-                <p className="mt-1 max-w-lg text-sm text-muted-foreground leading-relaxed">
-                  Multi-agent compositions built from templates.
-                  {activeWorkspace && (
-                    <span className="ml-2 text-primary">
-                      Editing <span className="font-medium">{activeWorkspace.name}</span>
-                    </span>
-                  )}
-                </p>
-              </div>
-              {activeWorkspace?.updatedAt && (
-                <div className="flex-shrink-0 text-right">
-                  <p className="text-[10px] text-muted-foreground/60">last saved</p>
-                  <p className="text-xs text-muted-foreground font-mono">
-                    {new Date(activeWorkspace.updatedAt).toLocaleString()}
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
+        {heroSection}
 
         {/* ── Metrics row ── */}
         <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -612,6 +841,10 @@ export function AgentStudioWorkspaces() {
           />
         </section>
 
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+          Agent Studio templates and workspaces are shared globally across profiles. Only runtime sessions/state remain profile-specific.
+        </div>
+
         <WorkspaceListPanel
           workspaces={workspaces}
           activeWorkspaceId={activeWorkspaceId}
@@ -621,6 +854,9 @@ export function AgentStudioWorkspaces() {
           hasUnsavedChanges={activeWorkspaceDirty}
           onSelectWorkspace={(id) => {
             void selectWorkspaceSafely(id);
+          }}
+          onOpenQuickStart={() => {
+            void openQuickStart();
           }}
           onCreateWorkspace={() => {
             void createWorkspaceSafely();
@@ -809,7 +1045,7 @@ function WorkspaceTabs({
 }) {
   const tabs: Array<{ id: WorkspaceTab; label: string; description: string; count?: string }> = [
     { id: 'canvas', label: 'Canvas', description: 'Compose & edit', count: String(nodeCount) },
-    { id: 'interface', label: 'Interface', description: 'Workspace chat', count: String(nodeCount) },
+    { id: 'interface', label: 'Interface', description: 'Task runner (non-persistent)', count: String(nodeCount) },
     { id: 'runs', label: 'Runs', description: 'Execution outputs', count: hasGeneratedPrompt ? '1' : '0' },
   ];
 

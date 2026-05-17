@@ -18,9 +18,15 @@ interface Props {
 
 export function SessionsPage({ onOpenSessionInChat }: Props) {
   const [sessions, setSessions] = useState<Record<string, SessionEntry> | null>(null);
-  const [stats, setStats] = useState<{ total_sessions: number; total_messages: number; database_size_bytes: number } | null>(null);
+  const [stats, setStats] = useState<{
+    total_sessions: number;
+    total_messages: number;
+    database_size_bytes: number;
+    by_workspace?: Array<{ workspace_id?: string | null; workspace_name?: string | null; count: number }>;
+  } | null>(null);
   const [search, setSearch] = useState('');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
+  const [workspaceFilter, setWorkspaceFilter] = useState<string>('all');
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -102,7 +108,10 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
 
   const handleExport = async () => {
     try {
-      const res = await api.sessions.export(sourceFilter !== 'all' ? { source: sourceFilter } : {});
+      const res = await api.sessions.export({
+        ...(sourceFilter !== 'all' ? { source: sourceFilter } : {}),
+        ...(workspaceFilter !== 'all' ? { workspace_id: workspaceFilter } : {}),
+      });
       const lines: string[] = Array.isArray(res.data?.items) ? res.data.items : [];
       const blob = new Blob([`${lines.join('\n')}\n`], { type: 'application/jsonl' });
       const url = URL.createObjectURL(blob);
@@ -117,7 +126,7 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
     const daysRaw = await prompt({ title: 'Prune sessions', message: 'Delete sessions older than how many days?', label: 'Days', defaultValue: '90', confirmLabel: 'Prune', validate: v => { const d = parseInt(v, 10); return Number.isFinite(d) && d > 0 ? null : 'Enter a valid number.'; } });
     if (!daysRaw) return;
     const days = Math.max(1, parseInt(daysRaw, 10) || 90);
-    const approved = await confirm({ title: 'Confirm prune', message: `Delete sessions older than ${days} days?`, confirmLabel: 'Prune', danger: true });
+      const approved = await confirm({ title: 'Confirm prune', message: `Delete sessions older than ${days} days?`, confirmLabel: 'Prune', danger: true });
     if (!approved) return;
     try {
       await api.sessions.prune({ older_than_days: days, source: sourceFilter !== 'all' ? sourceFilter : undefined });
@@ -131,12 +140,16 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
       ? Object.entries(sessions).filter(([, s]) => {
           const src = String(s.source || '').toLowerCase();
           const title = String(s.title || '').toLowerCase();
+          const workspaceId = String(s.workspace_id || '');
+          const workspaceName = String(s.workspace_name || '').toLowerCase();
           const srcMatch = sourceFilter === 'all' || src === sourceFilter.toLowerCase();
-          const textMatch = !search || title.includes(search.toLowerCase());
-          return srcMatch && textMatch;
+          const workspaceMatch = workspaceFilter === 'all' || workspaceId === workspaceFilter;
+          const text = search.toLowerCase();
+          const textMatch = !text || title.includes(text) || workspaceName.includes(text);
+          return srcMatch && workspaceMatch && textMatch;
         }).sort((a, b) => normalizeUnixTimestampSeconds(b[1].last_accessed) - normalizeUnixTimestampSeconds(a[1].last_accessed))
       : []
-  ), [sessions, search, sourceFilter]);
+  ), [sessions, search, sourceFilter, workspaceFilter]);
 
   const availableSources = useMemo(() => {
     if (!sessions) return [];
@@ -144,6 +157,24 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
     for (const [id, s] of Object.entries(sessions)) set.add(String(s.source || parsePlatformFromKey(id) || 'unknown'));
     return Array.from(set).sort();
   }, [sessions]);
+
+  const availableWorkspaces = useMemo(() => {
+    if (!sessions) return [];
+    const map = new Map<string, { id: string; name: string; count: number }>();
+    for (const session of Object.values(sessions)) {
+      const id = String(session.workspace_id || '').trim();
+      if (!id) continue;
+      const name = String(session.workspace_name || id).trim() || id;
+      const existing = map.get(id);
+      map.set(id, { id, name, count: (existing?.count || 0) + 1 });
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  }, [sessions]);
+
+  const workspaceLinkedCount = useMemo(
+    () => (sessions ? Object.values(sessions).filter(session => session.workspace_id).length : 0),
+    [sessions],
+  );
 
   return (
     <motion.div key="sessions" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }} className="mx-auto max-w-5xl space-y-5">
@@ -153,17 +184,28 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
           <h2 className="text-xl font-semibold tracking-tight">Sessions</h2>
           <p className="text-sm text-muted-foreground mt-0.5">
             {entries.length} active{stats && ` · ${stats.total_sessions} total · ${formatBytes(stats.database_size_bytes)}`}
+            {workspaceLinkedCount > 0 && ` · ${workspaceLinkedCount} workspace-linked`}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="relative">
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/50" />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…" className="w-44 rounded-lg border border-border/60 bg-muted/40 py-1.5 pl-8 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search sessions or workspaces…" className="w-56 rounded-lg border border-border/60 bg-muted/40 py-1.5 pl-8 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
           <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} className="rounded-lg border border-border/60 bg-muted/40 px-2.5 py-1.5 text-sm focus:outline-none" title="Source filter">
             <option value="all">All</option>
             {availableSources.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
+          {availableWorkspaces.length > 0 && (
+            <select value={workspaceFilter} onChange={e => setWorkspaceFilter(e.target.value)} className="max-w-[220px] rounded-lg border border-border/60 bg-muted/40 px-2.5 py-1.5 text-sm focus:outline-none" title="Workspace filter">
+              <option value="all">All workspaces</option>
+              {availableWorkspaces.map(workspace => (
+                <option key={workspace.id} value={workspace.id}>
+                  {workspace.name} ({workspace.count})
+                </option>
+              ))}
+            </select>
+          )}
           <button onClick={handleCreate} disabled={isProcessing} className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
             {isProcessing ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
             New
@@ -225,6 +267,12 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
                       <span className="text-[11px] font-mono text-muted-foreground/60">{sess.model || 'default'}</span>
                       {isRecent && <span className="w-1.5 h-1.5 rounded-full bg-success/60" title="Active recently" />}
                     </div>
+                    {sess.workspace_id && (
+                      <div className="mt-1 inline-flex max-w-full items-center gap-1 rounded-md border border-primary/20 bg-primary/8 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                        <MessageSquare size={10} className="shrink-0" />
+                        <span className="truncate">{sess.workspace_name || sess.workspace_id}</span>
+                      </div>
+                    )}
                   </div>
 
                   <span className="text-[11px] text-muted-foreground/50 flex-shrink-0 tabular-nums">

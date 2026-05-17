@@ -22,6 +22,16 @@ interface Props {
   requestNonce?: number;
 }
 
+function timestampLabel(date = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function workspaceSessionTitle(workspace: AgentWorkspace | undefined) {
+  const name = String(workspace?.name || 'Workspace').trim() || 'Workspace';
+  return `${name} workspace ${timestampLabel()}`.slice(0, 100);
+}
+
 export function ChatPage({ requestedSessionId = null, requestNonce = 0 }: Props) {
   const gateway = useGatewayContext();
   const { currentProfile } = useProfiles();
@@ -68,10 +78,41 @@ export function ChatPage({ requestedSessionId = null, requestNonce = 0 }: Props)
 
   const importWorkspace = async () => {
     if (!selectedWorkspaceId || importingWorkspace) return;
+    const selectedWorkspace = workspaces.find(workspace => workspace.id === selectedWorkspaceId);
     setImportingWorkspace(true);
     setWorkspaceImportError('');
     try {
       const response = await api.agentStudio.generatePrompt(selectedWorkspaceId);
+      try {
+        const created = await api.sessions.create({
+          source: 'agent-studio-workspace',
+          model: chat.model,
+          title: workspaceSessionTitle(selectedWorkspace),
+          workspace_id: selectedWorkspace?.id,
+          workspace_name: selectedWorkspace?.name,
+        });
+        if (created.data?.id) {
+          await chat.hydrateSession(String(created.data.id));
+        } else {
+          chat.handleNewChat();
+        }
+      } catch {
+        try {
+          const created = await api.sessions.create({
+            source: 'agent-studio-workspace',
+            model: chat.model,
+            workspace_id: selectedWorkspace?.id,
+            workspace_name: selectedWorkspace?.name,
+          });
+          if (created.data?.id) {
+            await chat.hydrateSession(String(created.data.id));
+          } else {
+            chat.handleNewChat();
+          }
+        } catch {
+          chat.handleNewChat();
+        }
+      }
       chat.setInput(`${response.data.prompt}\n\n## Task\n`);
     } catch {
       setWorkspaceImportError('Could not import workspace.');

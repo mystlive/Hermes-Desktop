@@ -9,6 +9,7 @@ import { LIVE2D_AVATARS } from './features/companions/live2dAvatars';
 import { useNavigation } from './hooks/useNavigation';
 import { useRuntimeStatus } from './hooks/useRuntimeStatus';
 import { useGatewayContext } from './contexts/GatewayContext';
+import { NavigationGuardProvider, useNavigationGuard } from './contexts/NavigationGuardContext';
 import { FeedbackProvider } from './contexts/FeedbackProvider';
 import { GatewayProvider } from './contexts/GatewayProvider';
 import { useProfiles } from './contexts/ProfileContext';
@@ -38,7 +39,9 @@ export default function App() {
     <ProfileProvider>
       <FeedbackProvider>
         <GatewayProvider>
-          <AppShell />
+          <NavigationGuardProvider>
+            <AppShell />
+          </NavigationGuardProvider>
         </GatewayProvider>
       </FeedbackProvider>
     </ProfileProvider>
@@ -56,6 +59,7 @@ function AppShell() {
   const location = useLocation();
   const { activeNav, navPathMap } = useNavigation();
   const { status: runtimeStatus } = useRuntimeStatus(gateway);
+  const { requestCanNavigate } = useNavigationGuard();
 
   const closeSidebarOnMobile = useCallback(() => {
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
@@ -70,9 +74,8 @@ function AppShell() {
   });
 
   const canLeaveCurrentPage = useCallback(async () => {
-    if (location.pathname !== '/workspaces') return true;
-    return window.hermesWorkspaceNavigationGuard?.() ?? true;
-  }, [location.pathname]);
+    return requestCanNavigate();
+  }, [requestCanNavigate]);
 
   const handleNavigate = (tab: NavItem) => {
     void (async () => {

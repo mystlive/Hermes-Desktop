@@ -363,6 +363,9 @@ export interface SessionEntry {
   source?: string;
   user_id?: string;
   model?: string;
+  workspace_id?: string | null;
+  workspace_name?: string | null;
+  parent_session_id?: string | null;
   last_accessed?: number;
   created_at?: number;
   title?: string;
@@ -554,17 +557,49 @@ export interface AgentWorkspaceExecutionRun {
   label: string;
   role: WorkspaceAgentRole;
   profileName?: string;
+  status?: 'completed' | 'failed' | 'blocked';
+  prompt?: string;
+  inputs?: Partial<Record<WorkspaceEdgeKind, Array<{
+    nodeId: string;
+    label: string;
+    role: WorkspaceAgentRole;
+    profileName?: string;
+    status?: 'completed' | 'failed' | 'blocked';
+    output?: string;
+    error?: string;
+    startedAt?: string;
+    finishedAt?: string;
+    template?: string;
+  }>>>;
   output?: string;
+  error?: string;
+  startedAt?: string;
+  finishedAt?: string;
   response?: unknown;
 }
 
 export interface AgentWorkspaceExecutionResult {
-  success: true;
+  success: boolean;
   mode: AgentWorkspace['defaultMode'];
-  status: 'ready' | 'completed';
+  status: 'ready' | 'completed' | 'failed' | 'blocked';
   prompt: string;
   output?: string;
   runs?: AgentWorkspaceExecutionRun[];
+  workflow?: {
+    status: 'completed' | 'failed' | 'blocked';
+    startedAt: string;
+    finishedAt: string;
+    counts: {
+      total: number;
+      completed: number;
+      failed: number;
+      blocked: number;
+    };
+    qaGate: {
+      required: boolean;
+      status: 'passed' | 'failed' | 'not-applicable';
+    };
+  };
   response?: unknown;
 }
 

@@ -12,26 +12,42 @@ export function registerSessionRoutes({
   sanitizeSessionTitle,
   upsertSession,
 }) {
+  function sessionWorkspacePayload(body = {}) {
+    const workspaceId = body?.workspace_id ? String(body.workspace_id).trim() : '';
+    const workspaceName = body?.workspace_name ? String(body.workspace_name).trim() : '';
+    return {
+      workspaceId: workspaceId || null,
+      workspaceName: workspaceName || null,
+    };
+  }
+
+  function sessionResponse(row) {
+    return {
+      id: row.id,
+      source: row.source || 'api-server',
+      user_id: row.user_id || null,
+      title: row.title || row.id,
+      model: row.model || 'default',
+      workspace_id: row.workspace_id || null,
+      workspace_name: row.workspace_name || null,
+      parent_session_id: row.parent_session_id || null,
+      created_at: row.started_at || nowTs(),
+      last_accessed: row.updated_at || row.started_at || nowTs(),
+    };
+  }
+
   app.get('/api/sessions', async (req, res) => {
     try {
       const db = req.hermes.db;
       const rows = db.prepare(`
-        SELECT id, source, user_id, title, model, started_at, updated_at
+        SELECT id, source, user_id, title, model, workspace_id, workspace_name, parent_session_id, started_at, updated_at
         FROM sessions
         ORDER BY COALESCE(updated_at, started_at) DESC
       `).all();
 
       const sessions = {};
       for (const row of rows) {
-        sessions[row.id] = {
-          id: row.id,
-          source: row.source,
-          user_id: row.user_id,
-          title: row.title || row.id,
-          model: row.model || 'default',
-          created_at: row.started_at || nowTs(),
-          last_accessed: row.updated_at || row.started_at || nowTs(),
-        };
+        sessions[row.id] = sessionResponse(row);
       }
 
       res.json(sessions);
@@ -49,18 +65,10 @@ export function registerSessionRoutes({
           userId: req.body?.user_id ? String(req.body.user_id) : undefined,
           model: req.body?.model ? String(req.body.model) : undefined,
           title: req.body?.title ? String(req.body.title) : undefined,
+          ...sessionWorkspacePayload(req.body),
         });
 
-        return res.json({
-          id: created.id,
-          title: created.title || created.id,
-          source: created.source || 'api-server',
-          user_id: created.user_id || null,
-          model: created.model || 'default',
-          parent_session_id: created.parent_session_id || null,
-          created_at: created.started_at || nowTs(),
-          last_accessed: created.updated_at || created.started_at || nowTs(),
-        });
+        return res.json(sessionResponse(created));
       }
 
       const id = String(req.body?.id || '').trim() || makeSessionId();
@@ -68,7 +76,8 @@ export function registerSessionRoutes({
       const userId = req.body?.user_id ? String(req.body.user_id) : null;
       const title = sanitizeSessionTitle(req.body?.title);
       const model = req.body?.model ? String(req.body.model) : null;
-      upsertSession(req.hermes, id, { source, userId, title, model, parentSessionId: null });
+      const workspace = sessionWorkspacePayload(req.body);
+      upsertSession(req.hermes, id, { source, userId, title, model, parentSessionId: null, ...workspace });
 
       res.json({
         id,
@@ -76,6 +85,9 @@ export function registerSessionRoutes({
         source,
         user_id: userId,
         model: model || 'default',
+        workspace_id: workspace.workspaceId,
+        workspace_name: workspace.workspaceName,
+        parent_session_id: null,
         created_at: nowTs(),
         last_accessed: nowTs(),
       });
@@ -140,18 +152,10 @@ export function registerSessionRoutes({
         userId: req.body?.user_id ? String(req.body.user_id) : undefined,
         model: req.body?.model ? String(req.body.model) : undefined,
         title: req.body?.title ? String(req.body.title) : undefined,
+        ...sessionWorkspacePayload(req.body),
       });
 
-      res.json({
-        id: created.id,
-        title: created.title || created.id,
-        source: created.source || 'api-server',
-        user_id: created.user_id || null,
-        model: created.model || 'default',
-        parent_session_id: created.parent_session_id || parentId,
-        created_at: created.started_at || nowTs(),
-        last_accessed: created.updated_at || created.started_at || nowTs(),
-      });
+      res.json(sessionResponse({ ...created, parent_session_id: created.parent_session_id || parentId }));
     } catch (error) {
       if (/UNIQUE constraint failed/i.test(String(error?.message || ''))) {
         return res.status(409).json({ error: 'Session title already in use' });
@@ -174,7 +178,7 @@ export function registerSessionRoutes({
       if (mode === 'continue') {
         if (preferredSource) {
           session = db.prepare(`
-            SELECT id, source, user_id, title, model, parent_session_id, started_at, ended_at, updated_at
+            SELECT id, source, user_id, title, model, workspace_id, workspace_name, parent_session_id, started_at, ended_at, updated_at
             FROM sessions
             WHERE source = ?
             ORDER BY COALESCE(updated_at, started_at) DESC
@@ -182,7 +186,7 @@ export function registerSessionRoutes({
           `).get(preferredSource);
         } else {
           session = db.prepare(`
-            SELECT id, source, user_id, title, model, parent_session_id, started_at, ended_at, updated_at
+            SELECT id, source, user_id, title, model, workspace_id, workspace_name, parent_session_id, started_at, ended_at, updated_at
             FROM sessions
             WHERE source IN ('cli', 'api-server')
             ORDER BY COALESCE(updated_at, started_at) DESC
@@ -194,7 +198,7 @@ export function registerSessionRoutes({
         session = getSessionById(req.hermes, value);
         if (!session) {
           session = db.prepare(`
-            SELECT id, source, user_id, title, model, parent_session_id, started_at, ended_at, updated_at
+            SELECT id, source, user_id, title, model, workspace_id, workspace_name, parent_session_id, started_at, ended_at, updated_at
             FROM sessions
             WHERE title = ?
             ORDER BY COALESCE(updated_at, started_at) DESC
@@ -216,16 +220,7 @@ export function registerSessionRoutes({
       const refreshed = getSessionById(req.hermes, session.id) || session;
       const recap = buildResumeRecap(req.hermes, session.id);
       res.json({
-        session: {
-          id: refreshed.id,
-          source: refreshed.source || 'api-server',
-          user_id: refreshed.user_id || null,
-          title: refreshed.title || refreshed.id,
-          model: refreshed.model || 'default',
-          parent_session_id: refreshed.parent_session_id || null,
-          created_at: refreshed.started_at || nowTs(),
-          last_accessed: refreshed.updated_at || refreshed.started_at || nowTs(),
-        },
+        session: sessionResponse(refreshed),
         recap,
       });
     } catch (error) {
@@ -241,7 +236,7 @@ export function registerSessionRoutes({
       const source = req.body?.source ? String(req.body.source) : 'api-server';
       const userId = req.body?.user_id ? String(req.body.user_id) : null;
       const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
-      upsertSession(req.hermes, id, { model, source, userId });
+      upsertSession(req.hermes, id, { model, source, userId, ...sessionWorkspacePayload(req.body) });
       const inserted = insertMessages(req.hermes, id, messages);
       res.json({ success: true, inserted, session_id: id });
     } catch (error) {
@@ -308,12 +303,20 @@ export function registerSessionRoutes({
       const totalSessions = req.hermes.db.prepare('SELECT COUNT(*) AS count FROM sessions').get()?.count || 0;
       const totalMessages = req.hermes.db.prepare('SELECT COUNT(*) AS count FROM messages').get()?.count || 0;
       const bySource = req.hermes.db.prepare('SELECT source, COUNT(*) AS count FROM sessions GROUP BY source ORDER BY count DESC').all();
+      const byWorkspace = req.hermes.db.prepare(`
+        SELECT workspace_id, COALESCE(workspace_name, workspace_id) AS workspace_name, COUNT(*) AS count
+        FROM sessions
+        WHERE workspace_id IS NOT NULL AND TRIM(workspace_id) != ''
+        GROUP BY workspace_id, workspace_name
+        ORDER BY count DESC, workspace_name ASC
+      `).all();
       const dbStats = await fs.stat(req.hermes.paths.stateDb).catch(() => null);
 
       res.json({
         total_sessions: totalSessions,
         total_messages: totalMessages,
         by_source: bySource,
+        by_workspace: byWorkspace,
         database_size_bytes: dbStats?.size || 0,
       });
     } catch (error) {
@@ -340,6 +343,7 @@ export function registerSessionRoutes({
   app.post('/api/sessions/export', async (req, res) => {
     try {
       const source = req.body?.source ? String(req.body.source) : null;
+      const workspaceId = req.body?.workspace_id ? String(req.body.workspace_id) : null;
       const sessionId = req.body?.session_id ? String(req.body.session_id) : null;
       const outputPath = req.body?.output_path ? String(req.body.output_path) : null;
 
@@ -353,10 +357,14 @@ export function registerSessionRoutes({
         whereClause = whereClause ? `${whereClause} AND s.id = ?` : 'WHERE s.id = ?';
         args.push(sessionId);
       }
+      if (workspaceId) {
+        whereClause = whereClause ? `${whereClause} AND s.workspace_id = ?` : 'WHERE s.workspace_id = ?';
+        args.push(workspaceId);
+      }
 
       const sessions = req.hermes.db.prepare(`
         SELECT s.id, s.source, s.user_id, s.title, s.model, s.system_prompt, s.parent_session_id,
-               s.started_at, s.ended_at, s.input_tokens, s.output_tokens, s.updated_at
+               s.workspace_id, s.workspace_name, s.started_at, s.ended_at, s.input_tokens, s.output_tokens, s.updated_at
         FROM sessions s
         ${whereClause}
         ORDER BY s.started_at ASC

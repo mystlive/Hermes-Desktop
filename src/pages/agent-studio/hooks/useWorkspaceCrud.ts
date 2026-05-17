@@ -216,18 +216,20 @@ export function useWorkspaceCrud({
     }
   }, [clearLibraryError, loadTemplates]);
 
-  const createWorkspace = useCallback(async () => {
+  const createWorkspace = useCallback(async (draft: Partial<AgentWorkspace> = createWorkspaceDraft()) => {
     setError('');
     clearLibraryError();
     try {
-      const res = await api.agentStudio.createWorkspace(createWorkspaceDraft());
+      const res = await api.agentStudio.createWorkspace(draft);
       setWorkspaces(current => [res.data.workspace, ...current]);
       markWorkspaceSaved(res.data.workspace);
       setActiveWorkspaceId(res.data.workspace.id);
       setSelectedNodeId(null);
       onWorkspaceContextReset?.();
+      return res.data.workspace;
     } catch (createError) {
       setError(formatError(createError, 'Could not create workspace.'));
+      return null;
     }
   }, [clearLibraryError, markWorkspaceSaved, onWorkspaceContextReset]);
 

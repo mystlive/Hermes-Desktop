@@ -30,10 +30,12 @@ export function registerGatewayRoutes({
       const userId = req.body?.user_id ? String(req.body.user_id) : null;
       const title = req.body?.session_title ? String(req.body.session_title) : null;
       const model = req.body?.model ? String(req.body.model) : null;
+      const workspaceId = req.body?.workspace_id ? String(req.body.workspace_id).trim() : null;
+      const workspaceName = req.body?.workspace_name ? String(req.body.workspace_name).trim() : null;
       const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
       const latestUserMessage = [...messages].reverse().find(item => item?.role === 'user');
 
-      upsertSession(req.hermes, sessionId, { source, userId, title, model });
+      upsertSession(req.hermes, sessionId, { source, userId, title, model, workspaceId, workspaceName });
       if (latestUserMessage) {
         insertMessages(req.hermes, sessionId, [{
           role: 'user',

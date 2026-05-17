@@ -5,7 +5,13 @@ function respondWithRouteError(res, error, fallbackMessage) {
   res.status(500).json({ error: fallbackMessage, details: error.message });
 }
 
-export function registerAgentStudioRoutes({ app, agentStudioService, getHermesContext, postGatewayChatCompletion }) {
+export function registerAgentStudioRoutes({
+  app,
+  agentStudioService,
+  getHermesContext,
+  postGatewayChatCompletion,
+  postPersistedGatewayChatCompletion = postGatewayChatCompletion,
+}) {
   app.get('/api/agent-studio/library', async (req, res) => {
     try {
       res.json(await agentStudioService.readLibrary(req.hermes));
@@ -105,7 +111,7 @@ export function registerAgentStudioRoutes({ app, agentStudioService, getHermesCo
   app.post('/api/agent-studio/workspaces/:id/auto-config', async (req, res) => {
     try {
       res.json(await agentStudioService.previewWorkspaceAutoConfig(req.hermes, req.params.id, req.body || {}, {
-        postGatewayChatCompletion,
+        postGatewayChatCompletion: postPersistedGatewayChatCompletion,
       }));
     } catch (error) {
       respondWithRouteError(res, error, 'Could not auto-configure workspace');
@@ -116,21 +122,25 @@ export function registerAgentStudioRoutes({ app, agentStudioService, getHermesCo
     try {
       res.json(await agentStudioService.executeWorkspace(req.hermes, req.params.id, req.body || {}, {
         getHermesContext,
-        postGatewayChatCompletion,
+        postGatewayChatCompletion: postPersistedGatewayChatCompletion,
       }));
     } catch (error) {
       respondWithRouteError(res, error, 'Could not execute workspace');
     }
   });
 
-  app.post('/api/agent-studio/workspaces/:id/chat', async (req, res) => {
+  const runWorkspaceTaskHandler = async (req, res) => {
     try {
-      res.json(await agentStudioService.chatWorkspace(req.hermes, req.params.id, req.body || {}, {
+      res.json(await agentStudioService.runWorkspaceTask(req.hermes, req.params.id, req.body || {}, {
         getHermesContext,
         postGatewayChatCompletion,
       }));
     } catch (error) {
-      respondWithRouteError(res, error, 'Could not run workspace chat');
+      respondWithRouteError(res, error, 'Could not run workspace task');
     }
-  });
+  };
+
+  app.post('/api/agent-studio/workspaces/:id/run', runWorkspaceTaskHandler);
+  // Legacy alias for compatibility with older frontend bundles.
+  app.post('/api/agent-studio/workspaces/:id/chat', runWorkspaceTaskHandler);
 }

@@ -68,6 +68,8 @@ test('continuation sessions keep lineage metadata and recap includes parsed tool
       userId: 'alice',
       title: 'Research Thread',
       model: 'gpt-test',
+      workspaceId: 'workspace-research',
+      workspaceName: 'Research Workspace',
     });
 
     insertMessages(hermes, 'session-parent', [
@@ -84,6 +86,8 @@ test('continuation sessions keep lineage metadata and recap includes parsed tool
     assert.equal(child.title, 'Research Thread #2');
     assert.equal(child.source, 'cli');
     assert.equal(child.user_id, 'alice');
+    assert.equal(child.workspace_id, 'workspace-research');
+    assert.equal(child.workspace_name, 'Research Workspace');
 
     const recap = buildResumeRecap(hermes, 'session-parent');
     assert.equal(recap.mode, 'full');
@@ -97,5 +101,38 @@ test('continuation sessions keep lineage metadata and recap includes parsed tool
       WHERE messages_fts MATCH ?
     `).all('queue');
     assert.equal(ftsMatches.length, 1);
+  });
+});
+
+test('sessions store workspace metadata and update it without losing existing values', async () => {
+  await withHermesContext(async ({ hermes }) => {
+    upsertSession(hermes, 'workspace-session', {
+      source: 'agent-studio-workspace',
+      title: 'MVP Builder workspace',
+      model: 'gpt-test',
+      workspaceId: 'workspace_mvp',
+      workspaceName: 'MVP Builder',
+    });
+
+    let row = hermes.db.prepare(`
+      SELECT workspace_id, workspace_name
+      FROM sessions
+      WHERE id = ?
+    `).get('workspace-session');
+    assert.equal(row.workspace_id, 'workspace_mvp');
+    assert.equal(row.workspace_name, 'MVP Builder');
+
+    upsertSession(hermes, 'workspace-session', {
+      model: 'gpt-test-updated',
+    });
+
+    row = hermes.db.prepare(`
+      SELECT workspace_id, workspace_name, model
+      FROM sessions
+      WHERE id = ?
+    `).get('workspace-session');
+    assert.equal(row.workspace_id, 'workspace_mvp');
+    assert.equal(row.workspace_name, 'MVP Builder');
+    assert.equal(row.model, 'gpt-test-updated');
   });
 });

@@ -17,18 +17,25 @@ function inferSessionMeta(sessionId) {
   return { source, userId };
 }
 
+function optionalSessionString(value) {
+  const text = String(value ?? '').trim();
+  return text || null;
+}
+
 export function upsertSession(hermes, sessionId, partial = {}) {
   const db = hermes.db;
   const existing = db.prepare('SELECT id FROM sessions WHERE id = ?').get(sessionId);
   const timestamp = nowTs();
   const inferred = inferSessionMeta(sessionId);
+  const workspaceId = optionalSessionString(partial.workspaceId ?? partial.workspace_id);
+  const workspaceName = optionalSessionString(partial.workspaceName ?? partial.workspace_name);
 
   if (!existing) {
     db.prepare(`
       INSERT INTO sessions (
-        id, source, user_id, title, model, system_prompt, parent_session_id,
+        id, source, user_id, title, model, system_prompt, workspace_id, workspace_name, parent_session_id,
         started_at, ended_at, input_tokens, output_tokens, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?)
     `).run(
       sessionId,
       partial.source || inferred.source || 'api-server',
@@ -36,6 +43,8 @@ export function upsertSession(hermes, sessionId, partial = {}) {
       partial.title ?? null,
       partial.model ?? null,
       partial.systemPrompt ?? null,
+      workspaceId,
+      workspaceName,
       partial.parentSessionId ?? null,
       partial.startedAt || timestamp,
       timestamp
@@ -51,6 +60,8 @@ export function upsertSession(hermes, sessionId, partial = {}) {
       title = COALESCE(?, title),
       model = COALESCE(?, model),
       system_prompt = COALESCE(?, system_prompt),
+      workspace_id = COALESCE(?, workspace_id),
+      workspace_name = COALESCE(?, workspace_name),
       parent_session_id = COALESCE(?, parent_session_id),
       ended_at = COALESCE(?, ended_at),
       input_tokens = input_tokens + ?,
@@ -63,6 +74,8 @@ export function upsertSession(hermes, sessionId, partial = {}) {
     partial.title ?? null,
     partial.model ?? null,
     partial.systemPrompt ?? null,
+    workspaceId,
+    workspaceName,
     partial.parentSessionId ?? null,
     partial.endedAt ?? null,
     Number(partial.inputTokens || 0),
@@ -152,7 +165,7 @@ function truncateAssistantContent(content) {
 export function getSessionById(hermes, sessionId) {
   const db = hermes.db;
   return db.prepare(`
-    SELECT id, source, user_id, title, model, parent_session_id, started_at, ended_at, updated_at
+    SELECT id, source, user_id, title, model, workspace_id, workspace_name, parent_session_id, started_at, ended_at, updated_at
     FROM sessions
     WHERE id = ?
   `).get(sessionId);
@@ -161,7 +174,7 @@ export function getSessionById(hermes, sessionId) {
 export function getLatestSessionByTitleVariant(hermes, baseTitle) {
   const db = hermes.db;
   return db.prepare(`
-    SELECT id, source, user_id, title, model, parent_session_id, started_at, ended_at, updated_at
+    SELECT id, source, user_id, title, model, workspace_id, workspace_name, parent_session_id, started_at, ended_at, updated_at
     FROM sessions
     WHERE title = ?
        OR title GLOB (? || ' #[0-9]*')
@@ -212,6 +225,8 @@ export function createContinuationSession(hermes, parentId, options = {}) {
     userId: options.userId ?? parent.user_id ?? null,
     title,
     model: options.model || parent.model || null,
+    workspaceId: options.workspaceId ?? options.workspace_id ?? parent.workspace_id ?? null,
+    workspaceName: options.workspaceName ?? options.workspace_name ?? parent.workspace_name ?? null,
     parentSessionId: parent.id,
   });
 

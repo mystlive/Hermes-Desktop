@@ -20,6 +20,7 @@ import {
   getChatMessagesStorageKey,
   getChatSessionStorageKey,
 } from '../features/chat/chatStorage';
+import type { StoredChatDraft } from '../features/chat/chatDraftBridge';
 
 const MAX_IMAGES = 5;
 export { CHAT_COMMANDS };
@@ -37,6 +38,16 @@ export const referenceTemplates: Array<{
   { kind: 'git', label: '@git', placeholder: '5' },
   { kind: 'url', label: '@url', placeholder: 'https://example.com' },
 ];
+
+function timestampLabel(date = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function workspaceSessionTitle(workspaceName: unknown) {
+  const name = String(workspaceName || 'Workspace').trim() || 'Workspace';
+  return `${name} workspace ${timestampLabel()}`.slice(0, 100);
+}
 
 // ── Hook ────────────────────────────────────────────────────────
 
@@ -162,7 +173,44 @@ export function useChat({
     resetComposer,
   });
 
-  useChatDraft({ setInput });
+  const prepareDraftSession = useCallback(async (draft: StoredChatDraft) => {
+    if (draft.source !== 'agent-studio-workspaces') return;
+    const workspaceId = typeof draft.metadata?.workspaceId === 'string' ? draft.metadata.workspaceId : undefined;
+    const workspaceName = typeof draft.metadata?.workspaceName === 'string' ? draft.metadata.workspaceName : undefined;
+    try {
+      const created = await apiClient.sessions.create({
+        source: 'agent-studio-workspace',
+        model,
+        title: workspaceSessionTitle(workspaceName),
+        workspace_id: workspaceId,
+        workspace_name: workspaceName,
+      });
+      if (created.data?.id) {
+        await hydrateSession(String(created.data.id));
+        return;
+      }
+    } catch {
+      // Keep the workspace prompt isolated from the current chat even if
+      // pre-creating the titled session fails.
+    }
+    try {
+      const created = await apiClient.sessions.create({
+        source: 'agent-studio-workspace',
+        model,
+        workspace_id: workspaceId,
+        workspace_name: workspaceName,
+      });
+      if (created.data?.id) {
+        await hydrateSession(String(created.data.id));
+        return;
+      }
+    } catch {
+      // Fall through to a local reset; the prompt still should not mix into the previous chat.
+    }
+    handleNewChat();
+  }, [handleNewChat, hydrateSession, model]);
+
+  useChatDraft({ setInput, onDraft: prepareDraftSession });
 
   // ── Computed: token estimates ─────────────────────────────
   const tokenEstimates: ChatTokenEstimates = useChatTokenEstimates({

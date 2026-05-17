@@ -153,10 +153,10 @@ export function ChatToolbar({
               onClick={onImportWorkspace}
               disabled={!selectedWorkspaceId || importingWorkspace}
               className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/15 disabled:opacity-50"
-              title="Import workspace"
+              title="Start a new chat session from this workspace"
             >
               {importingWorkspace ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
-              Import workspace
+              Start workspace chat
             </button>
           </div>
         )}

@@ -40,6 +40,8 @@ type ChatRequestBody = {
   source?: string;
   user_id?: string;
   session_title?: string;
+  workspace_id?: string;
+  workspace_name?: string;
 };
 
 type AgencyImportPayload = {
@@ -61,7 +63,7 @@ type PreferredSkillsUpdate = {
   preferredSkills: string[];
 };
 
-type WorkspaceChatPayload = {
+type WorkspaceTaskRunPayload = {
   task: string;
   mode?: AgentWorkspace['defaultMode'];
   model?: string;
@@ -213,7 +215,10 @@ export const agentStudio = {
     http.post<{ prompt: string }>(`/api/agent-studio/workspaces/${encodeURIComponent(id)}/generate-prompt`),
   executeWorkspace: (id: string, mode?: AgentWorkspace['defaultMode']) =>
     scanHttp.post<AgentWorkspaceExecutionResult>(`/api/agent-studio/workspaces/${encodeURIComponent(id)}/execute`, mode ? { mode } : {}),
-  chatWorkspace: (id: string, payload: WorkspaceChatPayload) =>
+  runWorkspaceTask: (id: string, payload: WorkspaceTaskRunPayload) =>
+    scanHttp.post<AgentWorkspaceExecutionResult>(`/api/agent-studio/workspaces/${encodeURIComponent(id)}/run`, payload),
+  // Legacy alias kept for compatibility while Interface is explicitly task-runner based.
+  chatWorkspace: (id: string, payload: WorkspaceTaskRunPayload) =>
     scanHttp.post<AgentWorkspaceExecutionResult>(`/api/agent-studio/workspaces/${encodeURIComponent(id)}/chat`, payload),
   autoConfigWorkspace: (id: string, payload: WorkspaceAutoConfigPayload) =>
     scanHttp.post<WorkspaceAutoConfigPreviewResult>(`/api/agent-studio/workspaces/${encodeURIComponent(id)}/auto-config`, payload),
@@ -315,7 +320,7 @@ export const config = {
 
 export const sessions = {
   list: () => http.get('/api/sessions'),
-  create: (payload?: { id?: string; source?: string; user_id?: string; title?: string; model?: string }) =>
+  create: (payload?: { id?: string; source?: string; user_id?: string; title?: string; model?: string; workspace_id?: string; workspace_name?: string }) =>
     http.post('/api/sessions', payload || {}),
   resume: (payload: { mode: 'continue' | 'resume'; value?: string; source?: string }) =>
     http.post('/api/sessions/resume', payload),
@@ -325,7 +330,7 @@ export const sessions = {
   getTitle: (id: string) => http.get(`/api/sessions/${encodeURIComponent(id)}/title`),
   setTitle: (id: string, title: string | null) =>
     http.post(`/api/sessions/${encodeURIComponent(id)}/title`, { title }),
-  continue: (id: string, payload?: { source?: string; user_id?: string; model?: string; title?: string }) =>
+  continue: (id: string, payload?: { source?: string; user_id?: string; model?: string; title?: string; workspace_id?: string; workspace_name?: string }) =>
     http.post(`/api/sessions/${encodeURIComponent(id)}/continue`, payload || {}),
   appendMessages: (id: string, payload: {
     messages: Array<{
@@ -340,11 +345,13 @@ export const sessions = {
     model?: string;
     source?: string;
     user_id?: string;
+    workspace_id?: string;
+    workspace_name?: string;
   }) => http.post(`/api/sessions/${encodeURIComponent(id)}/messages`, payload),
   transcript: (id: string) => http.get(`/api/sessions/${encodeURIComponent(id)}/transcript`),
   stats: () => http.get('/api/sessions/stats'),
   prune: (payload?: { older_than_days?: number; source?: string }) => http.post('/api/sessions/prune', payload || {}),
-  export: (payload?: { source?: string; session_id?: string; output_path?: string }) => http.post('/api/sessions/export', payload || {}),
+  export: (payload?: { source?: string; session_id?: string; workspace_id?: string; output_path?: string }) => http.post('/api/sessions/export', payload || {}),
 };
 
 export const models = {

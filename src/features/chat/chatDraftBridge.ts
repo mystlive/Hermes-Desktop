@@ -14,7 +14,7 @@ type ChatDraftPayload = {
   createdAt?: string;
 };
 
-type StoredChatDraft = {
+export type StoredChatDraft = {
   text: string;
   source?: string;
   metadata?: Record<string, unknown>;

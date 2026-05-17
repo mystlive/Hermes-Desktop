@@ -43,6 +43,20 @@ The current GitHub version includes the new local cockpit surfaces that were pre
 
 For a guided walkthrough of the Templates and Workspaces flow, see [`docs/templates-workspaces-tutorial.md`](docs/templates-workspaces-tutorial.md).
 
+## Latest Workspace Runtime Hardening
+
+The latest Workspaces update focuses on making the runtime behavior match what the UI promises, and on making multi-agent execution safer to operate:
+
+- **Workspace task runner semantics are now explicit**: the generated Workspace Interface is treated as a task runner, not a persistent mini-chat. Runs are isolated and no longer create hidden SQLite chat sessions behind the scenes.
+- **Workspace-to-Chat handoff is cleaner**: starting a chat from a workspace now creates a fresh titled session linked to that workspace, instead of silently mixing the imported prompt into the previous conversation.
+- **Workspace-linked sessions are first-class**: sessions now store workspace metadata, the Sessions page can filter/export by workspace, and workspace-linked conversations are visibly marked in the UI.
+- **Profile runtime is graph-aware**: profile-mode workspaces now execute nodes in a topological order based on blocking relations, return structured per-node run results, and distinguish between blocking execution edges (`handoff`, `review`, `qa`) and contextual edges (`broadcast`, `escalation`).
+- **Unsaved workspace protection is centralized**: leaving Workspaces, including the "Send to Chat" path, now goes through the same navigation guard so dirty local edits are less likely to be lost accidentally.
+- **Quick Start Teams were re-audited end-to-end**: all 20 prebuilt teams were checked for prompt intent, relation graph validity, runtime compatibility, and agent template resolution. The shipped definitions now avoid blocking relation cycles and are aligned to the multi-agent delegate runtime.
+- **Duplicate team-template names are surfaced explicitly**: if multiple templates share the same display name, Quick Start Team creation now stops with a clear ambiguity warning instead of picking one silently.
+
+In practice, this means Workspaces are now more predictable: the canvas, generated runner, chat import flow, session history, and profile execution model all tell the same story.
+
 ## Screenshots
 
 ### Chat interface

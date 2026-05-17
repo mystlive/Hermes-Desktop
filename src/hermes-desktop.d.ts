@@ -6,7 +6,6 @@ interface HermesDesktopApi {
 declare global {
   interface Window {
     hermesDesktop?: HermesDesktopApi;
-    hermesWorkspaceNavigationGuard?: () => Promise<boolean>;
   }
 }
 

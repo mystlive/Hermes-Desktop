@@ -603,7 +603,7 @@ test('workspace auto-config preview normalizes model output into safe workspace 
   });
 });
 
-test('workspace chat executes prompt mode with task and relations', async () => {
+test('workspace task runner executes prompt mode with task and relations', async () => {
   await withHermesFiles(async hermes => {
     const planner = await agentStudioService.createAgent(hermes, {
       name: 'Planner',
@@ -624,7 +624,8 @@ test('workspace chat executes prompt mode with task and relations', async () => 
     });
 
     const calls = [];
-    const result = await agentStudioService.chatWorkspace(hermes, workspace.workspace.id, {
+    assert.equal(typeof agentStudioService.chatWorkspace, 'function');
+    const result = await agentStudioService.runWorkspaceTask(hermes, workspace.workspace.id, {
       task: 'Draft a launch plan.',
     }, {
       postGatewayChatCompletion: async (_hermes, body) => {
@@ -636,7 +637,9 @@ test('workspace chat executes prompt mode with task and relations', async () => 
     assert.equal(result.success, true);
     assert.equal(result.mode, 'prompt');
     assert.equal(result.output, 'workspace answer');
-    assert.equal(calls[0].source, 'agent-studio-workspace-interface');
+    assert.equal(calls[0].source, 'agent-studio-workspace-task-runner');
+    assert.equal(calls[0].workspace_id, workspace.workspace.id);
+    assert.equal(calls[0].workspace_name, 'Interface Workspace');
     assert.match(calls[0].messages[0].content, /Draft a launch plan/);
     assert.match(calls[0].messages[0].content, /Planner -> Reviewer \(review\)/);
   });
@@ -670,30 +673,49 @@ test('workspace delegate execution calls gateway with delegate bridge prompt', a
     assert.equal(result.output, 'delegate done');
     assert.equal(calls.length, 1);
     assert.equal(calls[0].source, 'agent-studio-delegate');
+    assert.equal(calls[0].workspace_id, workspace.workspace.id);
+    assert.equal(calls[0].workspace_name, 'Delegate Workspace');
     assert.match(calls[0].messages[0].content, /delegate_task/);
     assert.match(calls[0].messages[0].content, /Delegate Workspace/);
   });
 });
 
-test('workspace profile execution dispatches nodes to configured profiles', async () => {
+test('workspace profile execution uses topological edge order and returns structured node runs', async () => {
   await withHermesFiles(async hermes => {
     hermes.profile = 'default';
-    const agent = await agentStudioService.createAgent(hermes, {
+    const planner = await agentStudioService.createAgent(hermes, {
+      name: 'Planner',
+      soul: '# Planner Soul',
+    });
+    const reviewer = await agentStudioService.createAgent(hermes, {
       name: 'Reviewer',
       soul: '# Reviewer Soul',
     });
     const workspace = await agentStudioService.createWorkspace(hermes, {
       name: 'Profile Workspace',
       defaultMode: 'profiles',
-      nodes: [{
-        id: 'node-profile',
-        agentId: agent.agent.id,
-        role: 'reviewer',
-        label: 'Runtime Reviewer',
-        profileName: 'review-profile',
-        modelOverride: 'review-model',
-        position: { x: 1, y: 2 },
-      }],
+      nodes: [
+        {
+          id: 'node-reviewer',
+          agentId: reviewer.agent.id,
+          role: 'reviewer',
+          label: 'Runtime Reviewer',
+          profileName: 'review-profile',
+          modelOverride: 'review-model',
+          position: { x: 1, y: 2 },
+        },
+        {
+          id: 'node-planner',
+          agentId: planner.agent.id,
+          role: 'orchestrator',
+          label: 'Runtime Planner',
+          profileName: 'plan-profile',
+          position: { x: 20, y: 30 },
+        },
+      ],
+      edges: [
+        { fromNodeId: 'node-planner', toNodeId: 'node-reviewer', kind: 'review' },
+      ],
     });
 
     const calls = [];
@@ -707,11 +729,362 @@ test('workspace profile execution dispatches nodes to configured profiles', asyn
 
     assert.equal(result.success, true);
     assert.equal(result.mode, 'profiles');
-    assert.equal(result.runs.length, 1);
-    assert.equal(result.runs[0].profileName, 'review-profile');
-    assert.equal(result.runs[0].output, 'ran on review-profile');
-    assert.equal(calls[0].profile, 'review-profile');
-    assert.equal(calls[0].body.model, 'review-model');
-    assert.match(calls[0].body.messages[0].content, /Runtime Reviewer/);
+    assert.equal(result.status, 'completed');
+    assert.equal(result.runs.length, 2);
+
+    // Topological order follows edge planner -> reviewer, even if node array order is reviewer then planner.
+    assert.equal(result.runs[0].nodeId, 'node-planner');
+    assert.equal(result.runs[1].nodeId, 'node-reviewer');
+
+    assert.equal(result.runs[0].status, 'completed');
+    assert.equal(result.runs[0].profileName, 'plan-profile');
+    assert.equal(result.runs[0].output, 'ran on plan-profile');
+    assert.match(result.runs[0].prompt, /Runtime Planner/);
+    assert.match(result.runs[0].startedAt, /^20/);
+    assert.match(result.runs[0].finishedAt, /^20/);
+    assert.equal(result.runs[0].error, '');
+    assert.deepEqual(result.runs[0].inputs, {
+      handoff: [],
+      review: [],
+      qa: [],
+      broadcast: [],
+      escalation: [],
+    });
+
+    assert.equal(result.runs[1].status, 'completed');
+    assert.equal(result.runs[1].profileName, 'review-profile');
+    assert.equal(result.runs[1].output, 'ran on review-profile');
+    assert.match(result.runs[1].prompt, /Runtime Reviewer/);
+    assert.match(result.runs[1].startedAt, /^20/);
+    assert.match(result.runs[1].finishedAt, /^20/);
+    assert.equal(result.runs[1].error, '');
+    assert.equal(result.runs[1].inputs.review.length, 1);
+    assert.equal(result.runs[1].inputs.review[0].nodeId, 'node-planner');
+    assert.equal(result.runs[1].inputs.review[0].output, 'ran on plan-profile');
+
+    assert.equal(calls[0].profile, 'plan-profile');
+    assert.equal(calls[0].body.workspace_id, workspace.workspace.id);
+    assert.equal(calls[0].body.workspace_name, 'Profile Workspace');
+    assert.equal(calls[1].profile, 'review-profile');
+    assert.equal(calls[1].body.model, 'review-model');
+
+    // Downstream reviewer prompt includes review input context and reviewer-specific guidance.
+    assert.match(calls[1].body.messages[0].content, /Review Inputs/);
+    assert.match(calls[1].body.messages[0].content, /ran on plan-profile/);
+    assert.match(calls[1].body.messages[0].content, /Downstream Assembly Rules/);
+    assert.match(calls[1].body.messages[0].content, /Reviewer Focus/);
+  });
+});
+
+test('workspace profile execution rejects cycles in workspace relations', async () => {
+  await withHermesFiles(async hermes => {
+    const first = await agentStudioService.createAgent(hermes, {
+      name: 'First',
+      soul: '# First Soul',
+    });
+    const second = await agentStudioService.createAgent(hermes, {
+      name: 'Second',
+      soul: '# Second Soul',
+    });
+
+    const workspace = await agentStudioService.createWorkspace(hermes, {
+      name: 'Cyclic Profile Workspace',
+      defaultMode: 'profiles',
+      nodes: [
+        { id: 'node-a', agentId: first.agent.id, role: 'worker', position: { x: 1, y: 2 } },
+        { id: 'node-b', agentId: second.agent.id, role: 'worker', position: { x: 3, y: 4 } },
+      ],
+      edges: [
+        { fromNodeId: 'node-a', toNodeId: 'node-b', kind: 'handoff' },
+        { fromNodeId: 'node-b', toNodeId: 'node-a', kind: 'review' },
+      ],
+    });
+
+    await assert.rejects(
+      agentStudioService.executeWorkspace(hermes, workspace.workspace.id, {}, {
+        postGatewayChatCompletion: async () => ({ choices: [{ message: { content: 'should not run' } }] }),
+      }),
+      error => {
+        assert.equal(error.statusCode, 400);
+        assert.match(error.message, /contain a cycle/);
+        return true;
+      },
+    );
+  });
+});
+
+test('workspace profile execution ignores cycles formed only by broadcast and escalation edges', async () => {
+  await withHermesFiles(async hermes => {
+    const first = await agentStudioService.createAgent(hermes, {
+      name: 'First',
+      soul: '# First Soul',
+    });
+    const second = await agentStudioService.createAgent(hermes, {
+      name: 'Second',
+      soul: '# Second Soul',
+    });
+
+    const workspace = await agentStudioService.createWorkspace(hermes, {
+      name: 'Contextual Cycle Workspace',
+      defaultMode: 'profiles',
+      nodes: [
+        { id: 'node-a', agentId: first.agent.id, role: 'worker', label: 'First', position: { x: 1, y: 1 } },
+        { id: 'node-b', agentId: second.agent.id, role: 'observer', label: 'Second', position: { x: 2, y: 1 } },
+      ],
+      edges: [
+        { fromNodeId: 'node-a', toNodeId: 'node-b', kind: 'broadcast', template: 'FYI from A to B.' },
+        { fromNodeId: 'node-b', toNodeId: 'node-a', kind: 'escalation', template: 'Risk escalation from B to A.' },
+      ],
+    });
+
+    const result = await agentStudioService.executeWorkspace(hermes, workspace.workspace.id, { task: 'Handle contextual-only graph' }, {
+      postGatewayChatCompletion: async (_targetHermes, body) => {
+        const prompt = body.messages?.[0]?.content || '';
+        if (prompt.includes('Profile Runtime Workspace Node: First')) return { choices: [{ message: { content: 'first complete' } }] };
+        return { choices: [{ message: { content: 'second complete' } }] };
+      },
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.status, 'completed');
+    assert.equal(result.runs.length, 2);
+    assert.deepEqual(result.runs.map(run => run.status), ['completed', 'completed']);
+  });
+});
+
+test('workspace profile execution injects upstream output into qa node prompt', async () => {
+  await withHermesFiles(async hermes => {
+    const builder = await agentStudioService.createAgent(hermes, {
+      name: 'Builder',
+      soul: '# Builder Soul',
+    });
+    const qa = await agentStudioService.createAgent(hermes, {
+      name: 'QA',
+      soul: '# QA Soul',
+    });
+
+    const workspace = await agentStudioService.createWorkspace(hermes, {
+      name: 'QA Profile Workspace',
+      defaultMode: 'profiles',
+      nodes: [
+        { id: 'node-builder', agentId: builder.agent.id, role: 'worker', position: { x: 1, y: 1 } },
+        { id: 'node-qa', agentId: qa.agent.id, role: 'qa', position: { x: 2, y: 2 } },
+      ],
+      edges: [
+        { fromNodeId: 'node-builder', toNodeId: 'node-qa', kind: 'qa' },
+      ],
+    });
+
+    const calls = [];
+    const result = await agentStudioService.executeWorkspace(hermes, workspace.workspace.id, { task: 'Ship safely' }, {
+      postGatewayChatCompletion: async (_targetHermes, body) => {
+        calls.push(body);
+        if (calls.length === 1) return { choices: [{ message: { content: 'artifact v1 ready' } }] };
+        return { choices: [{ message: { content: 'qa pass with checks' } }] };
+      },
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.runs[0].nodeId, 'node-builder');
+    assert.equal(result.runs[1].nodeId, 'node-qa');
+    assert.match(calls[1].messages[0].content, /QA Inputs/);
+    assert.match(calls[1].messages[0].content, /artifact v1 ready/);
+    assert.match(calls[1].messages[0].content, /QA Focus/);
+  });
+});
+
+test('workspace profile execution assembles downstream context by edge kind with templates', async () => {
+  await withHermesFiles(async hermes => {
+    const implementer = await agentStudioService.createAgent(hermes, { name: 'Implementer', soul: '# Implementer Soul' });
+    const reviewer = await agentStudioService.createAgent(hermes, { name: 'Reviewer', soul: '# Reviewer Soul' });
+    const qa = await agentStudioService.createAgent(hermes, { name: 'QA', soul: '# QA Soul' });
+    const orchestrator = await agentStudioService.createAgent(hermes, { name: 'Orchestrator', soul: '# Orchestrator Soul' });
+
+    const workspace = await agentStudioService.createWorkspace(hermes, {
+      name: 'Edge Kind Assembly Workspace',
+      defaultMode: 'profiles',
+      nodes: [
+        { id: 'node-impl', agentId: implementer.agent.id, role: 'worker', label: 'Implementer', position: { x: 1, y: 1 } },
+        { id: 'node-rev', agentId: reviewer.agent.id, role: 'reviewer', label: 'Reviewer', position: { x: 2, y: 1 } },
+        { id: 'node-qa', agentId: qa.agent.id, role: 'qa', label: 'QA', position: { x: 3, y: 1 } },
+        { id: 'node-orch', agentId: orchestrator.agent.id, role: 'orchestrator', label: 'Orchestrator', position: { x: 4, y: 1 } },
+      ],
+      edges: [
+        { fromNodeId: 'node-impl', toNodeId: 'node-orch', kind: 'handoff', template: 'Continue implementation from this draft.' },
+        { fromNodeId: 'node-rev', toNodeId: 'node-orch', kind: 'review', template: 'Address critical reviewer findings first.' },
+        { fromNodeId: 'node-qa', toNodeId: 'node-orch', kind: 'qa', template: 'Satisfy failing QA checks before finalize.' },
+      ],
+    });
+
+    const calls = [];
+    const result = await agentStudioService.executeWorkspace(hermes, workspace.workspace.id, { task: 'Deliver release candidate' }, {
+      postGatewayChatCompletion: async (_targetHermes, body) => {
+        calls.push(body);
+        const prompt = body.messages?.[0]?.content || '';
+        if (prompt.includes('Profile Runtime Workspace Node: Implementer')) return { choices: [{ message: { content: 'implementation draft' } }] };
+        if (prompt.includes('Profile Runtime Workspace Node: Reviewer')) return { choices: [{ message: { content: 'review findings' } }] };
+        if (prompt.includes('Profile Runtime Workspace Node: QA')) return { choices: [{ message: { content: 'qa checklist' } }] };
+        return { choices: [{ message: { content: 'orchestrated result' } }] };
+      },
+    });
+
+    assert.equal(result.success, true);
+    const orchestratorPrompt = calls[calls.length - 1].messages[0].content;
+    assert.match(orchestratorPrompt, /Handoff Inputs/);
+    assert.match(orchestratorPrompt, /Review Inputs/);
+    assert.match(orchestratorPrompt, /QA Inputs/);
+    assert.match(orchestratorPrompt, /implementation draft/);
+    assert.match(orchestratorPrompt, /review findings/);
+    assert.match(orchestratorPrompt, /qa checklist/);
+    assert.match(orchestratorPrompt, /Continue implementation from this draft/);
+    assert.match(orchestratorPrompt, /Address critical reviewer findings first/);
+    assert.match(orchestratorPrompt, /Satisfy failing QA checks before finalize/);
+    assert.match(orchestratorPrompt, /Downstream Assembly Rules/);
+
+    const orchestratorRun = result.runs.find(run => run.nodeId === 'node-orch');
+    assert.equal(orchestratorRun.inputs.handoff.length, 1);
+    assert.equal(orchestratorRun.inputs.review.length, 1);
+    assert.equal(orchestratorRun.inputs.qa.length, 1);
+    assert.equal(orchestratorRun.inputs.handoff[0].template, 'Continue implementation from this draft.');
+    assert.equal(orchestratorRun.inputs.review[0].template, 'Address critical reviewer findings first.');
+    assert.equal(orchestratorRun.inputs.qa[0].template, 'Satisfy failing QA checks before finalize.');
+  });
+});
+
+test('workspace profile execution keeps broadcast and escalation as contextual non-blocking inputs', async () => {
+  await withHermesFiles(async hermes => {
+    const implementer = await agentStudioService.createAgent(hermes, { name: 'Implementer', soul: '# Implementer Soul' });
+    const announcer = await agentStudioService.createAgent(hermes, { name: 'Announcer', soul: '# Announcer Soul' });
+    const reviewer = await agentStudioService.createAgent(hermes, { name: 'Reviewer', soul: '# Reviewer Soul' });
+
+    const workspace = await agentStudioService.createWorkspace(hermes, {
+      name: 'Contextual Inputs Workspace',
+      defaultMode: 'profiles',
+      nodes: [
+        { id: 'node-impl', agentId: implementer.agent.id, role: 'worker', label: 'Implementer', position: { x: 1, y: 1 } },
+        { id: 'node-ann', agentId: announcer.agent.id, role: 'observer', label: 'Announcer', position: { x: 2, y: 1 } },
+        { id: 'node-rev', agentId: reviewer.agent.id, role: 'reviewer', label: 'Reviewer', position: { x: 3, y: 1 } },
+      ],
+      edges: [
+        { fromNodeId: 'node-impl', toNodeId: 'node-rev', kind: 'review', template: 'Review the implementation output.' },
+        { fromNodeId: 'node-ann', toNodeId: 'node-rev', kind: 'broadcast', template: 'Shared context from announcements.' },
+        { fromNodeId: 'node-ann', toNodeId: 'node-rev', kind: 'escalation', template: 'Escalated production risk.' },
+      ],
+    });
+
+    const calls = [];
+    const result = await agentStudioService.executeWorkspace(hermes, workspace.workspace.id, { task: 'Assess the release' }, {
+      postGatewayChatCompletion: async (_targetHermes, body) => {
+        calls.push(body);
+        const prompt = body.messages?.[0]?.content || '';
+        if (prompt.includes('Profile Runtime Workspace Node: Implementer')) return { choices: [{ message: { content: 'implementation complete' } }] };
+        if (prompt.includes('Profile Runtime Workspace Node: Announcer')) return { choices: [{ message: { content: 'broadcast context and escalation details' } }] };
+        return { choices: [{ message: { content: 'review outcome' } }] };
+      },
+    });
+
+    assert.equal(result.success, true);
+    const reviewerPrompt = calls[calls.length - 1].messages[0].content;
+    assert.match(reviewerPrompt, /Review Inputs/);
+    assert.match(reviewerPrompt, /Broadcast Inputs/);
+    assert.match(reviewerPrompt, /Escalation Inputs/);
+    assert.match(reviewerPrompt, /Shared context from announcements/);
+    assert.match(reviewerPrompt, /Escalated production risk/);
+
+    const reviewerRun = result.runs.find(run => run.nodeId === 'node-rev');
+    assert.equal(reviewerRun.inputs.review.length, 1);
+    assert.equal(reviewerRun.inputs.broadcast.length, 1);
+    assert.equal(reviewerRun.inputs.escalation.length, 1);
+    assert.equal(reviewerRun.inputs.broadcast[0].template, 'Shared context from announcements.');
+    assert.equal(reviewerRun.inputs.escalation[0].template, 'Escalated production risk.');
+    assert.equal(reviewerRun.status, 'completed');
+  });
+});
+
+test('workspace profile execution runs independent layer nodes in parallel and emits workflow aggregate', async () => {
+  await withHermesFiles(async hermes => {
+    const first = await agentStudioService.createAgent(hermes, { name: 'First', soul: '# First Soul' });
+    const second = await agentStudioService.createAgent(hermes, { name: 'Second', soul: '# Second Soul' });
+    const qa = await agentStudioService.createAgent(hermes, { name: 'QA', soul: '# QA Soul' });
+
+    const workspace = await agentStudioService.createWorkspace(hermes, {
+      name: 'Parallel Layer Workspace',
+      defaultMode: 'profiles',
+      nodes: [
+        { id: 'node-first', agentId: first.agent.id, role: 'worker', label: 'First', position: { x: 1, y: 1 } },
+        { id: 'node-second', agentId: second.agent.id, role: 'worker', label: 'Second', position: { x: 2, y: 1 } },
+        { id: 'node-qa', agentId: qa.agent.id, role: 'qa', label: 'QA', position: { x: 3, y: 1 } },
+      ],
+      edges: [
+        { fromNodeId: 'node-first', toNodeId: 'node-qa', kind: 'qa' },
+        { fromNodeId: 'node-second', toNodeId: 'node-qa', kind: 'qa' },
+      ],
+    });
+
+    let active = 0;
+    let maxActive = 0;
+    const result = await agentStudioService.executeWorkspace(hermes, workspace.workspace.id, { task: 'Run in parallel' }, {
+      postGatewayChatCompletion: async (_targetHermes, body) => {
+        const prompt = body.messages?.[0]?.content || '';
+        active += 1;
+        if (active > maxActive) maxActive = active;
+        const delay = prompt.includes('Profile Runtime Workspace Node: QA') ? 5 : 40;
+        await new Promise(resolve => setTimeout(resolve, delay));
+        active -= 1;
+        if (prompt.includes('Profile Runtime Workspace Node: First')) return { choices: [{ message: { content: 'first out' } }] };
+        if (prompt.includes('Profile Runtime Workspace Node: Second')) return { choices: [{ message: { content: 'second out' } }] };
+        return { choices: [{ message: { content: 'qa out' } }] };
+      },
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.status, 'completed');
+    assert.ok(maxActive >= 2);
+    assert.equal(result.workflow.status, 'completed');
+    assert.equal(result.workflow.counts.total, 3);
+    assert.equal(result.workflow.counts.completed, 3);
+    assert.equal(result.workflow.counts.failed, 0);
+    assert.equal(result.workflow.counts.blocked, 0);
+    assert.equal(result.workflow.qaGate.required, true);
+    assert.equal(result.workflow.qaGate.status, 'passed');
+  });
+});
+
+test('workspace profile execution marks downstream node blocked when upstream failed', async () => {
+  await withHermesFiles(async hermes => {
+    const impl = await agentStudioService.createAgent(hermes, { name: 'Impl', soul: '# Impl Soul' });
+    const reviewer = await agentStudioService.createAgent(hermes, { name: 'Reviewer', soul: '# Reviewer Soul' });
+
+    const workspace = await agentStudioService.createWorkspace(hermes, {
+      name: 'Blocked Workspace',
+      defaultMode: 'profiles',
+      nodes: [
+        { id: 'node-impl', agentId: impl.agent.id, role: 'worker', label: 'Impl', position: { x: 1, y: 1 } },
+        { id: 'node-rev', agentId: reviewer.agent.id, role: 'reviewer', label: 'Reviewer', position: { x: 2, y: 1 } },
+      ],
+      edges: [
+        { fromNodeId: 'node-impl', toNodeId: 'node-rev', kind: 'review', template: 'Must pass implementation before review.' },
+      ],
+    });
+
+    const result = await agentStudioService.executeWorkspace(hermes, workspace.workspace.id, { task: 'Fail upstream' }, {
+      postGatewayChatCompletion: async (_targetHermes, body) => {
+        const prompt = body.messages?.[0]?.content || '';
+        if (prompt.includes('Profile Runtime Workspace Node: Impl')) throw new Error('impl failed hard');
+        return { choices: [{ message: { content: 'should not execute' } }] };
+      },
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.status, 'failed');
+    const implRun = result.runs.find(run => run.nodeId === 'node-impl');
+    const reviewerRun = result.runs.find(run => run.nodeId === 'node-rev');
+    assert.equal(implRun.status, 'failed');
+    assert.equal(reviewerRun.status, 'blocked');
+    assert.match(reviewerRun.error, /Blocked by upstream dependencies/);
+    assert.equal(reviewerRun.inputs.review.length, 1);
+    assert.equal(reviewerRun.inputs.review[0].status, 'failed');
+    assert.equal(result.workflow.counts.failed, 1);
+    assert.equal(result.workflow.counts.blocked, 1);
   });
 });

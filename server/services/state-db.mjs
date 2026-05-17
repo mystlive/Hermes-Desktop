@@ -18,6 +18,8 @@ function initializeStateDb(dbPath, db) {
       title TEXT,
       model TEXT,
       system_prompt TEXT,
+      workspace_id TEXT,
+      workspace_name TEXT,
       parent_session_id TEXT,
       started_at INTEGER NOT NULL,
       ended_at INTEGER,
@@ -58,6 +60,21 @@ function initializeStateDb(dbPath, db) {
       INSERT INTO messages_fts(rowid, content) VALUES (new.id, COALESCE(new.content, ''));
     END;
 
+  `);
+  ensureSessionWorkspaceColumns(db);
+}
+
+function ensureSessionWorkspaceColumns(db) {
+  const columns = new Set(db.prepare('PRAGMA table_info(sessions)').all().map(column => column.name));
+  if (!columns.has('workspace_id')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN workspace_id TEXT;');
+  }
+  if (!columns.has('workspace_name')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN workspace_name TEXT;');
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sessions_workspace_updated
+      ON sessions(workspace_id, updated_at DESC);
   `);
 }
 

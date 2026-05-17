@@ -197,6 +197,47 @@ const postDesktopGatewayChatCompletion = (hermes, body, options = {}) => postGat
   getProviderRequestConfig: options.getProviderRequestConfig || getDesktopProviderRequestConfig,
 });
 
+async function postPersistedDesktopGatewayChatCompletion(hermes, body = {}, options = {}) {
+  const sessionId = String(body?.session_id || '').trim() || makeSessionId();
+  const source = String(body?.source || 'api-server');
+  const userId = body?.user_id ? String(body.user_id) : null;
+  const title = body?.session_title ? String(body.session_title) : null;
+  const model = body?.model ? String(body.model) : null;
+  const workspaceId = body?.workspace_id ? String(body.workspace_id).trim() : null;
+  const workspaceName = body?.workspace_name ? String(body.workspace_name).trim() : null;
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const latestUserMessage = [...messages].reverse().find(item => item?.role === 'user');
+
+  upsertSession(hermes, sessionId, {
+    source,
+    userId,
+    title,
+    model,
+    workspaceId,
+    workspaceName,
+  });
+  if (latestUserMessage) {
+    insertMessages(hermes, sessionId, [{
+      role: 'user',
+      content: latestUserMessage.content,
+      timestamp: nowTs(),
+    }]);
+  }
+
+  const data = await postDesktopGatewayChatCompletion(hermes, { ...body, session_id: sessionId }, options);
+  const assistantContent = extractAssistantText(data);
+  if (assistantContent) {
+    insertMessages(hermes, sessionId, [{
+      role: 'assistant',
+      content: assistantContent,
+      timestamp: nowTs(),
+    }]);
+  }
+
+  data.session_id = sessionId;
+  return data;
+}
+
 // ── Express App Setup ───────────────────────────────────────────────
 const app = express();
 const isLocalRequest = createLocalRequestChecker({ trustProxy: TRUST_PROXY });
@@ -412,7 +453,13 @@ registerProfileRoutes({
 
 // ── Route Registration (remaining) ──────────────────────────────────
 
-  registerAgentStudioRoutes({ app, agentStudioService, getHermesContext, postGatewayChatCompletion: postDesktopGatewayChatCompletion });
+registerAgentStudioRoutes({
+  app,
+  agentStudioService,
+  getHermesContext,
+  postGatewayChatCompletion: postDesktopGatewayChatCompletion,
+  postPersistedGatewayChatCompletion: postPersistedDesktopGatewayChatCompletion,
+});
   registerConfigRoutes({ app, runtimeFilesService });
   registerContextReferenceRoutes({ app, contextReferenceService });
   registerSessionRoutes({

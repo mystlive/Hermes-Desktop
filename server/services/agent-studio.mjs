@@ -7,6 +7,8 @@ const MANAGED_CATALOG_SOURCES = new Set(['agency-agents', 'aliasrobotics-cai']);
 const VALID_ROLES = new Set(['orchestrator', 'worker', 'reviewer', 'qa', 'observer']);
 const VALID_EDGE_KINDS = new Set(['handoff', 'review', 'qa', 'broadcast', 'escalation']);
 const VALID_MODES = new Set(['prompt', 'delegate', 'profiles']);
+const BLOCKING_EXECUTION_EDGE_KINDS = new Set(['handoff', 'review', 'qa']);
+const CONTEXTUAL_EXECUTION_EDGE_KINDS = new Set(['broadcast', 'escalation']);
 const DEFAULT_AGENCY_REPO_URL = 'https://github.com/msitarzewski/agency-agents';
 const DEFAULT_AGENCY_REPO_BRANCH = 'main';
 const GITHUB_API_BASE = 'https://api.github.com';
@@ -370,11 +372,121 @@ function buildProfileNodePrompt(workspace, node, agent, agentsById, options = {}
   appendSection(lines, 'Common Rules', workspace.commonRules);
   appendSection(lines, 'Current Task', options.task);
   appendNodeFlow(lines, workspace, node, agentsById);
+
+  const upstreamByKind = options.upstreamByKind || {};
+  const handoffInputs = Array.isArray(upstreamByKind.handoff) ? upstreamByKind.handoff : [];
+  const reviewInputs = Array.isArray(upstreamByKind.review) ? upstreamByKind.review : [];
+  const qaInputs = Array.isArray(upstreamByKind.qa) ? upstreamByKind.qa : [];
+  const broadcastInputs = Array.isArray(upstreamByKind.broadcast) ? upstreamByKind.broadcast : [];
+  const escalationInputs = Array.isArray(upstreamByKind.escalation) ? upstreamByKind.escalation : [];
+
+  const appendUpstreamSection = (title, items) => {
+    if (!Array.isArray(items) || items.length === 0) return;
+    lines.push(`## ${title}`, '');
+    for (const item of items) {
+      const upstreamLabel = cleanString(item?.label) || item?.nodeId || 'Upstream node';
+      const upstreamProfile = cleanString(item?.profileName) || 'default';
+      const upstreamStatus = cleanString(item?.status) || 'unknown';
+      const upstreamOutput = cleanString(item?.output) || '(no output)';
+      const template = cleanString(item?.template);
+      lines.push(`### ${upstreamLabel} (${upstreamProfile}) [${upstreamStatus}]`, '');
+      if (template) lines.push(`Edge instruction: ${template}`, '');
+      lines.push(upstreamOutput, '');
+    }
+  };
+
+  appendUpstreamSection('Handoff Inputs', handoffInputs);
+  appendUpstreamSection('Review Inputs', reviewInputs);
+  appendUpstreamSection('QA Inputs', qaInputs);
+  appendUpstreamSection('Broadcast Inputs', broadcastInputs);
+  appendUpstreamSection('Escalation Inputs', escalationInputs);
+
+  if (handoffInputs.length || reviewInputs.length || qaInputs.length || broadcastInputs.length || escalationInputs.length) {
+    lines.push('## Downstream Assembly Rules', '');
+    if (handoffInputs.length) lines.push('- Treat Handoff Inputs as primary implementation context to continue from.');
+    if (reviewInputs.length) lines.push('- Treat Review Inputs as critiques to address explicitly; mark resolved vs unresolved points.');
+    if (qaInputs.length) lines.push('- Treat QA Inputs as validation constraints and test obligations before finalizing.');
+    if (broadcastInputs.length) lines.push('- Treat Broadcast Inputs as shared situational context; incorporate only the relevant signals into your response.');
+    if (escalationInputs.length) lines.push('- Treat Escalation Inputs as risk or severity alerts that must be acknowledged explicitly if they affect your outcome.');
+    lines.push('');
+  }
+
+  if (node.role === 'reviewer') {
+    lines.push('## Reviewer Focus', '', 'Review upstream outputs for correctness, gaps, and risk. Return concrete fixes and clear pass/fail reasoning.', '');
+  }
+  if (node.role === 'qa') {
+    lines.push('## QA Focus', '', 'Validate acceptance criteria, edge cases, and testability. Return explicit verification steps and any blocking issues.', '');
+  }
+
   if (node.skills?.length) lines.push('## Skills', '', node.skills.join(', '), '');
   if (node.toolsets?.length) lines.push('## Toolsets', '', node.toolsets.join(', '), '');
   if (agent?.soul) appendSection(lines, 'Agent Identity', agent.soul);
   lines.push('## Task', '', options.task || 'Execute your part of this workspace and return a concise result for the orchestrator.', '');
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function buildProfilesExecutionPlan(workspace) {
+  const nodes = Array.isArray(workspace?.nodes) ? workspace.nodes : [];
+  const edges = Array.isArray(workspace?.edges) ? workspace.edges : [];
+  const nodeById = new Map(nodes.map((node, index) => [node.id, { node, index }]));
+
+  const incoming = new Map(nodes.map(node => [node.id, 0]));
+  const adjacency = new Map(nodes.map(node => [node.id, []]));
+  const incomingEdgesByNodeId = new Map(nodes.map(node => [node.id, []]));
+
+  for (const edge of edges) {
+    const fromNodeId = cleanString(edge?.fromNodeId);
+    const toNodeId = cleanString(edge?.toNodeId);
+    if (!fromNodeId || !toNodeId) continue;
+    if (!nodeById.has(fromNodeId) || !nodeById.has(toNodeId)) {
+      throw createHttpError(400, `Workspace relation references missing node endpoint: ${fromNodeId} -> ${toNodeId}`);
+    }
+    const kind = VALID_EDGE_KINDS.has(edge?.kind) ? edge.kind : 'handoff';
+    incomingEdgesByNodeId.get(toNodeId).push({
+      fromNodeId,
+      toNodeId,
+      kind,
+      template: cleanString(edge?.template),
+    });
+    if (!BLOCKING_EXECUTION_EDGE_KINDS.has(kind)) continue;
+    adjacency.get(fromNodeId).push(toNodeId);
+    incoming.set(toNodeId, (incoming.get(toNodeId) || 0) + 1);
+  }
+
+  const queue = nodes
+    .filter(node => (incoming.get(node.id) || 0) === 0)
+    .sort((left, right) => nodeById.get(left.id).index - nodeById.get(right.id).index)
+    .map(node => node.id);
+
+  const orderedNodeIds = [];
+  const layers = [];
+  while (queue.length > 0) {
+    const currentLayer = [...queue].sort((leftId, rightId) => nodeById.get(leftId).index - nodeById.get(rightId).index);
+    queue.length = 0;
+    layers.push(currentLayer);
+
+    for (const nodeId of currentLayer) {
+      orderedNodeIds.push(nodeId);
+      const neighbors = adjacency.get(nodeId) || [];
+      for (const nextId of neighbors) {
+        incoming.set(nextId, (incoming.get(nextId) || 0) - 1);
+        if ((incoming.get(nextId) || 0) === 0) queue.push(nextId);
+      }
+    }
+  }
+
+  if (orderedNodeIds.length !== nodes.length) {
+    const unresolvedNodeIds = nodes
+      .map(node => node.id)
+      .filter(nodeId => !orderedNodeIds.includes(nodeId));
+    throw createHttpError(400, `Workspace relations contain a cycle. Nodes involved: ${unresolvedNodeIds.join(', ')}`);
+  }
+
+  return {
+    orderedNodes: orderedNodeIds.map(nodeId => nodeById.get(nodeId).node),
+    layers: layers.map(layer => layer.map(nodeId => nodeById.get(nodeId).node)),
+    incomingEdgesByNodeId,
+  };
 }
 
 function buildWorkspaceAutoConfigPrompt(workspace, agentsById, pipelineBrief) {
@@ -1060,6 +1172,8 @@ export function createAgentStudioService({
       ...(payload?.model ? { model: cleanString(payload.model) } : {}),
       source: 'agent-studio-auto-config',
       session_title: `Workspace Auto Config: ${workspace.name}`,
+      workspace_id: workspace.id,
+      workspace_name: workspace.name,
       messages: [{ role: 'user', content: prompt }],
     });
 
@@ -1100,8 +1214,10 @@ export function createAgentStudioService({
     if (mode === 'prompt') {
       const response = await runners.postGatewayChatCompletion(hermes, {
         ...(payload?.model ? { model: cleanString(payload.model) } : {}),
-        source: 'agent-studio-workspace-interface',
-        session_title: `Workspace Chat: ${workspace.name}`,
+        source: 'agent-studio-workspace-task-runner',
+        session_title: `Workspace Task Run: ${workspace.name}`,
+        workspace_id: workspace.id,
+        workspace_name: workspace.name,
         messages: [{ role: 'user', content: prompt }],
       });
       return {
@@ -1120,6 +1236,8 @@ export function createAgentStudioService({
         ...(payload?.model ? { model: cleanString(payload.model) } : {}),
         source: 'agent-studio-delegate',
         session_title: `Workspace Delegate: ${workspace.name}`,
+        workspace_id: workspace.id,
+        workspace_name: workspace.name,
         messages: [{ role: 'user', content: delegatePrompt }],
       });
       return {
@@ -1132,38 +1250,165 @@ export function createAgentStudioService({
       };
     }
 
+    const { orderedNodes, layers, incomingEdgesByNodeId } = buildProfilesExecutionPlan(workspace);
     const runs = [];
-    for (const node of workspace.nodes) {
+    const runByNodeId = new Map();
+    const workflowStartedAt = nowIso();
+
+    const executeNode = async (node) => {
+      const startedAt = nowIso();
       const agent = agentsById.get(node.agentId);
       const profileName = cleanString(node.profileName) || hermes.profile || 'default';
-      const targetHermes = node.profileName && runners.getHermesContext
-        ? await runners.getHermesContext(profileName)
-        : hermes;
-      const nodePrompt = buildProfileNodePrompt(workspace, node, agent, agentsById, { task });
-      const response = await runners.postGatewayChatCompletion(targetHermes, {
-        ...(node.modelOverride ? { model: node.modelOverride } : {}),
-        source: 'agent-studio-profile-runtime',
-        session_title: `Workspace ${workspace.name}: ${cleanString(node.label) || agent?.name || node.id}`,
-        messages: [{ role: 'user', content: nodePrompt }],
-      });
-      runs.push({
-        nodeId: node.id,
-        agentId: node.agentId,
-        label: cleanString(node.label) || agent?.name || node.id,
-        role: node.role,
-        profileName,
-        output: extractAssistantContent(response),
-        response,
-      });
+      const label = cleanString(node.label) || agent?.name || node.id;
+      const incomingEdges = incomingEdgesByNodeId.get(node.id) || [];
+      const upstreamByKind = { handoff: [], review: [], qa: [], broadcast: [], escalation: [] };
+      const structuredInputs = { handoff: [], review: [], qa: [], broadcast: [], escalation: [] };
+
+      for (const edge of incomingEdges) {
+        const upstreamRun = runByNodeId.get(edge.fromNodeId);
+        if (!upstreamRun) continue;
+        if (!upstreamByKind[edge.kind]) continue;
+        const sharedInput = {
+          nodeId: upstreamRun.nodeId,
+          label: upstreamRun.label,
+          role: upstreamRun.role,
+          profileName: upstreamRun.profileName,
+          status: upstreamRun.status,
+          output: upstreamRun.output,
+          error: upstreamRun.error,
+          startedAt: upstreamRun.startedAt,
+          finishedAt: upstreamRun.finishedAt,
+          template: edge.template,
+        };
+        upstreamByKind[edge.kind].push({ ...sharedInput, kind: edge.kind });
+        structuredInputs[edge.kind].push(sharedInput);
+      }
+
+      const blockingKinds = [...BLOCKING_EXECUTION_EDGE_KINDS];
+      const blockingInputs = blockingKinds.flatMap(kind => structuredInputs[kind].filter(input => input.status !== 'completed'));
+      const nodePrompt = buildProfileNodePrompt(workspace, node, agent, agentsById, { task, upstreamByKind });
+
+      if (blockingInputs.length > 0) {
+        const reasons = blockingInputs.map(input => `${input.label} [${input.status}]`).join(', ');
+        return {
+          nodeId: node.id,
+          agentId: node.agentId,
+          label,
+          role: node.role,
+          profileName,
+          status: 'blocked',
+          prompt: nodePrompt,
+          inputs: structuredInputs,
+          output: '',
+          error: `Blocked by upstream dependencies: ${reasons}`,
+          startedAt,
+          finishedAt: nowIso(),
+        };
+      }
+
+      try {
+        const targetHermes = node.profileName && runners.getHermesContext
+          ? await runners.getHermesContext(profileName)
+          : hermes;
+        const response = await runners.postGatewayChatCompletion(targetHermes, {
+          ...(node.modelOverride ? { model: node.modelOverride } : {}),
+          source: 'agent-studio-profile-runtime',
+          session_title: `Workspace ${workspace.name}: ${label}`,
+          workspace_id: workspace.id,
+          workspace_name: workspace.name,
+          messages: [{ role: 'user', content: nodePrompt }],
+        });
+
+        return {
+          nodeId: node.id,
+          agentId: node.agentId,
+          label,
+          role: node.role,
+          profileName,
+          status: 'completed',
+          prompt: nodePrompt,
+          inputs: structuredInputs,
+          output: extractAssistantContent(response),
+          error: '',
+          startedAt,
+          finishedAt: nowIso(),
+          response,
+        };
+      } catch (error) {
+        const message = error?.message || 'Node execution failed';
+        return {
+          nodeId: node.id,
+          agentId: node.agentId,
+          label,
+          role: node.role,
+          profileName,
+          status: 'failed',
+          prompt: nodePrompt,
+          inputs: structuredInputs,
+          output: '',
+          error: message,
+          startedAt,
+          finishedAt: nowIso(),
+        };
+      }
+    };
+
+    for (const layer of layers) {
+      const layerRuns = await Promise.all(layer.map(node => executeNode(node)));
+      for (const run of layerRuns) {
+        runs.push(run);
+        runByNodeId.set(run.nodeId, run);
+      }
     }
 
+    const counts = {
+      total: runs.length,
+      completed: runs.filter(run => run.status === 'completed').length,
+      failed: runs.filter(run => run.status === 'failed').length,
+      blocked: runs.filter(run => run.status === 'blocked').length,
+    };
+    const hasQaNodes = orderedNodes.some(node => node.role === 'qa');
+    const qaRuns = runs.filter(run => run.role === 'qa');
+    const qaGate = hasQaNodes
+      ? {
+          required: true,
+          status: qaRuns.length > 0 && qaRuns.every(run => run.status === 'completed') ? 'passed' : 'failed',
+        }
+      : {
+          required: false,
+          status: 'not_required',
+        };
+
+    const workflowStatus = counts.failed > 0
+      ? 'failed'
+      : counts.blocked > 0
+        ? 'blocked'
+        : 'completed';
+
+    const workflow = {
+      status: workflowStatus,
+      startedAt: workflowStartedAt,
+      finishedAt: nowIso(),
+      counts,
+      qaGate,
+    };
+
     return {
-      success: true,
+      success: workflowStatus === 'completed',
       mode,
-      status: 'completed',
+      status: workflowStatus,
       prompt,
+      workflow,
       runs,
-      output: runs.map(run => `## ${run.label} (${run.profileName})\n${run.output || '(no output)'}`).join('\n\n'),
+      ...(workflowStatus !== 'completed'
+        ? { error: `Workspace profile execution finished with status ${workflowStatus}.` }
+        : {}),
+      output: runs.map(run => {
+        const body = run.status === 'completed'
+          ? (run.output || '(no output)')
+          : `(${run.status}) ${run.error || 'unknown issue'}`;
+        return `## ${run.label} (${run.profileName})\n${body}`;
+      }).join('\n\n'),
     };
   }
 
@@ -1172,12 +1417,15 @@ export function createAgentStudioService({
     return runWorkspaceWithGateway(hermes, workspace, agentsById, payload, runners);
   }
 
-  async function chatWorkspace(hermes, id, payload = {}, runners = {}) {
+  async function runWorkspaceTask(hermes, id, payload = {}, runners = {}) {
     const task = cleanString(payload?.task);
-    if (!task) throw createHttpError(400, 'Workspace chat task is required');
+    if (!task) throw createHttpError(400, 'Workspace task is required');
     const { workspace, agentsById } = await getWorkspaceExecutionContext(hermes, id);
     return runWorkspaceWithGateway(hermes, workspace, agentsById, payload, runners, { executePromptMode: true });
   }
+
+  // Legacy alias kept for compatibility with older route/service call sites.
+  const chatWorkspace = runWorkspaceTask;
 
   return {
     readLibrary,
@@ -1194,6 +1442,7 @@ export function createAgentStudioService({
     generateWorkspacePrompt,
     previewWorkspaceAutoConfig,
     executeWorkspace,
+    runWorkspaceTask,
     chatWorkspace,
   };
 }

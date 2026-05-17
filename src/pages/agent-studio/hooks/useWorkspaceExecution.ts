@@ -8,6 +8,7 @@ interface UseWorkspaceExecutionOptions {
   saveWorkspace: () => Promise<AgentWorkspace | null>;
   clearLibraryError: () => void;
   onError: (message: string) => void;
+  canNavigateToChat?: () => Promise<boolean>;
   onNavigateToChat: () => void;
   onAfterExecute?: () => void;
 }
@@ -26,6 +27,7 @@ export function useWorkspaceExecution({
   saveWorkspace,
   clearLibraryError,
   onError,
+  canNavigateToChat,
   onNavigateToChat,
   onAfterExecute,
 }: UseWorkspaceExecutionOptions) {
@@ -67,6 +69,7 @@ export function useWorkspaceExecution({
 
   const sendPromptToChat = useCallback(async () => {
     if (!activeWorkspace) return;
+    if (canNavigateToChat && !(await canNavigateToChat())) return;
     let prompt = generatedPrompt;
     if (!prompt) {
       const saved = await saveWorkspace();
@@ -78,10 +81,14 @@ export function useWorkspaceExecution({
     setDraft({
       text: prompt,
       source: 'agent-studio-workspaces',
-      metadata: { workspaceId: activeWorkspace.id, mode: activeWorkspace.defaultMode },
+      metadata: {
+        workspaceId: activeWorkspace.id,
+        workspaceName: activeWorkspace.name,
+        mode: activeWorkspace.defaultMode,
+      },
     });
     onNavigateToChat();
-  }, [activeWorkspace, generatedPrompt, onNavigateToChat, saveWorkspace]);
+  }, [activeWorkspace, canNavigateToChat, generatedPrompt, onNavigateToChat, saveWorkspace]);
 
   const executeWorkspace = useCallback(async () => {
     if (!activeWorkspace) return;

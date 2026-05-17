@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, Loader2, MessageSquare, Plus, Save, Search, Trash2, Wand2 } from 'lucide-react';
+import { ArrowLeft, Check, ChevronDown, Loader2, MessageSquare, Plus, Save, Search, Trash2, Wand2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { AgentWorkspace } from '../../../types';
 
@@ -11,6 +11,7 @@ type WorkspaceListPanelProps = {
   hasActiveWorkspace: boolean;
   hasUnsavedChanges: boolean;
   onSelectWorkspace: (id: string) => void;
+  onOpenQuickStart?: () => void;
   onCreateWorkspace: () => void;
   onSaveWorkspace: () => void;
   onGeneratePrompt: () => void;
@@ -26,6 +27,7 @@ export function WorkspaceListPanel({
   hasActiveWorkspace,
   hasUnsavedChanges,
   onSelectWorkspace,
+  onOpenQuickStart,
   onCreateWorkspace,
   onSaveWorkspace,
   onGeneratePrompt,
@@ -39,6 +41,7 @@ export function WorkspaceListPanel({
         activeWorkspaceId={activeWorkspaceId}
         hasUnsavedChanges={hasUnsavedChanges}
         onSelect={onSelectWorkspace}
+        onOpenQuickStart={onOpenQuickStart}
         onCreate={onCreateWorkspace}
       />
       <div className="flex flex-wrap items-center gap-2">
@@ -91,12 +94,14 @@ function WorkspaceSelector({
   activeWorkspaceId,
   hasUnsavedChanges,
   onSelect,
+  onOpenQuickStart,
   onCreate,
 }: {
   workspaces: AgentWorkspace[];
   activeWorkspaceId: string | null;
   hasUnsavedChanges: boolean;
   onSelect: (id: string) => void;
+  onOpenQuickStart?: () => void;
   onCreate: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -164,6 +169,16 @@ function WorkspaceSelector({
             <ChevronDown size={14} className={cn('text-muted-foreground transition-transform', open && 'rotate-180')} />
           </span>
         </button>
+
+        {onOpenQuickStart && (
+          <button
+            onClick={onOpenQuickStart}
+            className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted"
+          >
+            <ArrowLeft size={15} />
+            Back to teams
+          </button>
+        )}
 
         <button
           onClick={onCreate}

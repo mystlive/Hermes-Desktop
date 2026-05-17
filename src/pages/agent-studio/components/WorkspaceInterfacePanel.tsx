@@ -1,4 +1,4 @@
-import { CheckCircle2, Loader2, MessageSquare, Send } from 'lucide-react';
+import { CheckCircle2, Loader2, PlaySquare, RotateCcw, Send } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../../../api';
 import { Card } from '../../../components/Card';
@@ -42,84 +42,147 @@ export function WorkspaceInterfacePanel({
   const [running, setRunning] = useState(false);
   const [agentProgress, setAgentProgress] = useState<Record<string, 'pending' | 'running' | 'done'>>({});
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const timersRef = useRef<{ timeouts: number[]; intervals: number[] }>({ timeouts: [], intervals: [] });
+  const runTokenRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+  const workspaceIdRef = useRef<string | null>(workspace?.id || null);
 
-  const agentNames = useMemo(() => {
+  const agentRuntimeList = useMemo(() => {
     if (!workspace) return [];
-    return workspace.nodes.map(node => node.label || agentsById.get(node.agentId)?.name || 'Missing agent');
+    return workspace.nodes.map((node, index) => ({
+      nodeId: node.id,
+      label: node.label || agentsById.get(node.agentId)?.name || `Agent ${index + 1}`,
+      index,
+    }));
   }, [agentsById, workspace]);
+
+  const clearTimers = useCallback(() => {
+    for (const timeoutId of timersRef.current.timeouts) window.clearTimeout(timeoutId);
+    for (const intervalId of timersRef.current.intervals) window.clearInterval(intervalId);
+    timersRef.current = { timeouts: [], intervals: [] };
+  }, []);
+
+  const resetRunState = useCallback((options: { keepMessages?: boolean } = {}) => {
+    runTokenRef.current = null;
+    clearTimers();
+    setRunning(false);
+    setAgentProgress({});
+    if (!options.keepMessages) setMessages([]);
+  }, [clearTimers]);
 
   const autoScroll = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
-  useEffect(() => { autoScroll(); }, [messages, agentProgress, autoScroll]);
+  useEffect(() => {
+    autoScroll();
+  }, [messages, agentProgress, autoScroll]);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      resetRunState({ keepMessages: true });
+    };
+  }, [resetRunState]);
+
+  useEffect(() => {
+    const nextWorkspaceId = workspace?.id || null;
+    if (workspaceIdRef.current === nextWorkspaceId) return;
+    workspaceIdRef.current = nextWorkspaceId;
+    resetRunState();
+    setInput('');
+    onError('');
+  }, [workspace?.id, onError, resetRunState]);
+
+  const markAssistantMessage = useCallback((targetMessageId: string, content: string, token: string) => {
+    if (!mountedRef.current || runTokenRef.current !== token) return;
+    setMessages(current => current.map(message => (
+      message.id === targetMessageId ? { ...message, content } : message
+    )));
+  }, []);
+
+  const revealProgressively = useCallback((targetMessageId: string, content: string, token: string) => {
+    if (content.length <= 200) {
+      markAssistantMessage(targetMessageId, content, token);
+      return;
+    }
+
+    const chunkSize = 80;
+    let pos = 0;
+    const intervalId = window.setInterval(() => {
+      if (!mountedRef.current || runTokenRef.current !== token) {
+        window.clearInterval(intervalId);
+        return;
+      }
+      pos += chunkSize;
+      if (pos >= content.length) {
+        pos = content.length;
+        window.clearInterval(intervalId);
+      }
+      markAssistantMessage(targetMessageId, content.slice(0, pos), token);
+    }, 30);
+    timersRef.current.intervals.push(intervalId);
+  }, [markAssistantMessage]);
 
   const send = async () => {
     const task = input.trim();
     if (!workspace || !task || running) return;
+
+    resetRunState({ keepMessages: true });
+    const token = `${workspace.id}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+    runTokenRef.current = token;
+
     setInput('');
     setRunning(true);
-  onError('');
+    onError('');
 
     const userMessage: WorkspaceInterfaceMessage = { id: messageId(), role: 'user', content: task };
     const assistantId = messageId();
     setMessages(current => [...current, userMessage, { id: assistantId, role: 'assistant', content: '' }]);
 
-    // Show each agent as "running" with a staggered reveal
     const progress: Record<string, 'pending' | 'running' | 'done'> = {};
-    workspace.nodes.forEach((node, i) => {
-      const label = node.label || agentsById.get(node.agentId)?.name || `Agent ${i + 1}`;
-      progress[label] = i === 0 ? 'running' : 'pending';
+    workspace.nodes.forEach((node, index) => {
+      progress[node.id] = index === 0 ? 'running' : 'pending';
     });
     setAgentProgress(progress);
 
-    // Stagger the agent progress indicators
-    workspace.nodes.forEach((node, i) => {
-      const label = node.label || agentsById.get(node.agentId)?.name || `Agent ${i + 1}`;
-      setTimeout(() => {
-        setAgentProgress(prev => ({ ...prev, [label]: 'running' }));
-      }, (i + 1) * 800);
+    workspace.nodes.forEach((node, index) => {
+      const timeoutId = window.setTimeout(() => {
+        if (!mountedRef.current || runTokenRef.current !== token) return;
+        setAgentProgress(prev => ({ ...prev, [node.id]: 'running' }));
+      }, (index + 1) * 800);
+      timersRef.current.timeouts.push(timeoutId);
     });
 
     try {
       const saved = await saveWorkspace();
-      if (!saved) return;
-      const response = await api.agentStudio.chatWorkspace(saved.id, {
+      if (!saved || !mountedRef.current || runTokenRef.current !== token) return;
+
+      const response = await api.agentStudio.runWorkspaceTask(saved.id, {
         task,
         mode: saved.defaultMode,
       });
+      if (!mountedRef.current || runTokenRef.current !== token) return;
 
-      const runs = response.data.runs || [];
-      // runs available if needed
-
-      // Mark all agents as done
       const doneProgress: Record<string, 'done'> = {};
       workspace.nodes.forEach((node) => {
-        const label = node.label || agentsById.get(node.agentId)?.name || 'Agent';
-        doneProgress[label] = 'done';
+        doneProgress[node.id] = 'done';
       });
       setAgentProgress(doneProgress);
 
-      const content = response.data.output || response.data.prompt || 'No workspace output.';
-
-      // Staggered reveal: split by runs then reveal progressively
-      if (runs.length > 0) {
-        const parts = runs.map(r => r.output || '').filter(Boolean);
-        if (parts.length > 0) {
-          revealProgressively(assistantId, parts.join('\n\n---\n\n'), setMessages);
-        } else {
-          revealProgressively(assistantId, content, setMessages);
-        }
-      } else {
-        revealProgressively(assistantId, content, setMessages);
-      }
+      const runs = response.data.runs || [];
+      const fallback = response.data.output || response.data.prompt || 'No workspace output.';
+      const runOutput = runs.map((run: { output?: string }) => run.output || '').filter(Boolean).join('\n\n---\n\n');
+      revealProgressively(assistantId, runOutput || fallback, token);
     } catch (error) {
-      const content = formatError(error, 'Could not run workspace interface.');
-      setMessages(current => current.map(message =>
-        message.id === assistantId ? { ...message, content } : message,
-      ));
+      if (!mountedRef.current || runTokenRef.current !== token) return;
+      const content = formatError(error, 'Could not run workspace task.');
+      markAssistantMessage(assistantId, content, token);
       onError(content);
     } finally {
+      if (!mountedRef.current || runTokenRef.current !== token) return;
+      runTokenRef.current = null;
+      clearTimers();
       setRunning(false);
     }
   };
@@ -128,16 +191,19 @@ export function WorkspaceInterfacePanel({
     <Card className="min-h-[680px] overflow-hidden">
       {!workspace ? (
         <div className="flex min-h-[680px] items-center justify-center text-sm text-muted-foreground">
-          Create a workspace before generating an interface.
+          Create a workspace before running tasks.
         </div>
       ) : (
         <div className="grid min-h-[680px] grid-cols-1 xl:grid-cols-[320px_minmax(0,1fr)]">
           <aside className="border-b border-border p-4 xl:border-b-0 xl:border-r">
             <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <MessageSquare size={18} />
+              <PlaySquare size={18} />
             </div>
             <h3 className="text-sm font-semibold">{workspace.name}</h3>
             <p className="mt-1 text-xs text-muted-foreground">{workspace.defaultMode} mode</p>
+            <p className="mt-3 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              This interface is a task runner. Runs are isolated, non-conversational, and not persisted as a chat session.
+            </p>
             <div className="mt-4 grid grid-cols-2 gap-2">
               <div className="rounded-lg border border-border bg-muted/20 p-3">
                 <p className="text-[10px] uppercase text-muted-foreground">Agents</p>
@@ -149,13 +215,12 @@ export function WorkspaceInterfacePanel({
               </div>
             </div>
 
-            {/* Agent progress indicators */}
             <div className="mt-4 space-y-2">
-              {agentNames.map((name, index) => {
-                const status = agentProgress[name] || 'pending';
+              {agentRuntimeList.map(({ nodeId, label, index }) => {
+                const status = agentProgress[nodeId] || 'pending';
                 return (
                   <div
-                    key={`${name}-${index}`}
+                    key={nodeId}
                     className={cn(
                       'flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-all',
                       status === 'running'
@@ -168,19 +233,15 @@ export function WorkspaceInterfacePanel({
                     <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted text-[10px] font-semibold">
                       {index + 1}
                     </span>
-                    <span className="min-w-0 flex-1 truncate">{name}</span>
+                    <span className="min-w-0 flex-1 truncate">{label}</span>
                     {status === 'running' && (
                       <span className="relative flex h-2 w-2 shrink-0">
                         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
                         <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
                       </span>
                     )}
-                    {status === 'done' && (
-                      <CheckCircle2 size={14} className="shrink-0 text-success" />
-                    )}
-                    {status === 'pending' && (
-                      <span className="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/30" />
-                    )}
+                    {status === 'done' && <CheckCircle2 size={14} className="shrink-0 text-success" />}
+                    {status === 'pending' && <span className="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/30" />}
                   </div>
                 );
               })}
@@ -191,18 +252,15 @@ export function WorkspaceInterfacePanel({
             <div className="flex-1 space-y-3 overflow-auto p-4">
               {messages.length === 0 ? (
                 <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-                  Ask the workspace to run a task with its agents, context, rules, and relations.
+                  Run an isolated task with this workspace configuration. This panel stores only a local run log.
                 </div>
               ) : messages.map(message => (
-                <div
-                  key={message.id}
-                  className={message.role === 'user' ? 'flex justify-end' : 'flex justify-start'}
-                >
-                  <div className={
-                    message.role === 'user'
+                <div key={message.id} className={message.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
+                  <div
+                    className={message.role === 'user'
                       ? 'max-w-[78%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground'
-                      : 'max-w-[88%] whitespace-pre-wrap rounded-lg border border-border bg-muted/35 px-3 py-2 text-sm leading-6'
-                  }>
+                      : 'max-w-[88%] whitespace-pre-wrap rounded-lg border border-border bg-muted/35 px-3 py-2 text-sm leading-6'}
+                  >
                     {message.content || (
                       <span className="inline-flex items-center gap-2 text-muted-foreground">
                         <Loader2 size={14} className="animate-spin" />
@@ -216,6 +274,16 @@ export function WorkspaceInterfacePanel({
             </div>
 
             <div className="border-t border-border p-3">
+              <div className="mb-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => resetRunState()}
+                  disabled={running || messages.length === 0}
+                  className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-40"
+                >
+                  <RotateCcw size={12} /> Clear
+                </button>
+              </div>
               <div className="flex items-end gap-2">
                 <textarea
                   value={input}
@@ -247,34 +315,4 @@ export function WorkspaceInterfacePanel({
       )}
     </Card>
   );
-}
-
-// ── Typewriter reveal helper ─────────────────────────────────────
-
-function revealProgressively(
-  messageId: string,
-  content: string,
-  setMessages: React.Dispatch<React.SetStateAction<WorkspaceInterfaceMessage[]>>,
-) {
-  // If content is short, show it immediately
-  if (content.length <= 200) {
-    setMessages(current => current.map(m =>
-      m.id === messageId ? { ...m, content } : m,
-    ));
-    return;
-  }
-
-  // Progressive reveal in chunks
-  const chunkSize = 80;
-  let pos = 0;
-  const interval = setInterval(() => {
-    pos += chunkSize;
-    if (pos >= content.length) {
-      pos = content.length;
-      clearInterval(interval);
-    }
-    setMessages(current => current.map(m =>
-      m.id === messageId ? { ...m, content: content.slice(0, pos) } : m,
-    ));
-  }, 30);
 }
