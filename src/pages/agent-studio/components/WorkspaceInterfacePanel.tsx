@@ -180,10 +180,11 @@ export function WorkspaceInterfacePanel({
       markAssistantMessage(assistantId, content, token);
       onError(content);
     } finally {
-      if (!mountedRef.current || runTokenRef.current !== token) return;
-      runTokenRef.current = null;
-      clearTimers();
-      setRunning(false);
+      if (mountedRef.current && runTokenRef.current === token) {
+        runTokenRef.current = null;
+        clearTimers();
+        setRunning(false);
+      }
     }
   };
 
