@@ -1,7 +1,7 @@
 # Hermes Desktop — Audit architectural complet et plan de refactor
 
 Date: 2026-05-11
-Repo: `/mnt/c/Users/GAMER PC/.hermes/hermes-builder`
+Repo: `/mnt/c/Users/<user>/.hermes/hermes-builder`
 
 ## 1. Résumé exécutif
 

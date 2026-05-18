@@ -1,7 +1,7 @@
 # Hermes Desktop OshiKoi Relay Integration Plan
 
 Date: 2026-05-14
-Repo: `C:\Users\GAMER PC\.hermes\hermes-builder`
+Repo: `C:\Users\<user>\.hermes\hermes-builder`
 Target model for delegation: `gpt-5.3-codex`
 
 ## Goal

@@ -1,7 +1,7 @@
 # Hermes Desktop — Backlog de refactor exécutable lot par lot
 
 Date: 2026-05-11
-Repo: `/mnt/c/Users/GAMER PC/.hermes/hermes-builder`
+Repo: `/mnt/c/Users/<user>/.hermes/hermes-builder`
 
 > Ce backlog découpe le plan de refactor en lots exécutables, incrémentaux, vérifiables, avec surface de changement limitée.
 > Stratégie: safe/strangler refactor, façade publique stable, vérification après chaque lot.

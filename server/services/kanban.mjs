@@ -26,7 +26,7 @@ function _getKanbanHome() {
   const hermesHome = process.env.HERMES_HOME;
   if (hermesHome) return hermesHome;
   // Default to the profile-aware root
-  const home = process.env.HOME || '/home/nabs';
+  const home = process.env.HOME || '/home/user';
   return path.join(home, '.hermes');
 }
 

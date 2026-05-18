@@ -1,7 +1,7 @@
 # Hermes Desktop OshiKoi I/O Shell PR Prompts
 
 Date: 2026-05-14
-Repo: `C:\Users\GAMER PC\.hermes\hermes-builder`
+Repo: `C:\Users\<user>\.hermes\hermes-builder`
 Target execution model: `gpt-5.3-codex`
 Primary source plan:
 
@@ -39,7 +39,7 @@ Execution prompt:
 
 ```text
 Work in this repo only:
-C:\Users\GAMER PC\.hermes\hermes-builder
+C:\Users\<user>\.hermes\hermes-builder
 
 Context:
 We are implementing a bidirectional OshiKoi shell for Hermes Desktop. OshiKoi is the user-facing input/output surface, and Hermes is the real intelligence layer. This PR is the first slice only: architecture note plus backend seam. Do not implement the browser companion extension yet.
@@ -127,7 +127,7 @@ Execution prompt:
 
 ```text
 Work in this repo only:
-C:\Users\GAMER PC\.hermes\hermes-builder
+C:\Users\<user>\.hermes\hermes-builder
 
 Context:
 We are implementing a Hermes-owned companion extension for oshikoi.io so OshiKoi can act as the input/output shell for Hermes. This PR covers the extension scaffold and the input interception path only.
@@ -200,7 +200,7 @@ Execution prompt:
 
 ```text
 Work in this repo only:
-C:\Users\GAMER PC\.hermes\hermes-builder
+C:\Users\<user>\.hermes\hermes-builder
 
 Context:
 This PR completes the bidirectional bridge core. Human input already originates in OshiKoi and is intercepted by the companion extension. Now we need to route that input through the real Hermes chat pipeline and deliver Hermes output back into OshiKoi without loops.
@@ -273,7 +273,7 @@ Execution prompt:
 
 ```text
 Work in this repo only:
-C:\Users\GAMER PC\.hermes\hermes-builder
+C:\Users\<user>\.hermes\hermes-builder
 
 Context:
 The OshiKoi bidirectional shell bridge exists. This PR makes it supportable: operator UI in Hermes Desktop, targeted verification, and troubleshooting docs.
@@ -342,7 +342,7 @@ Use this before pasting one of the PR prompts if you want to prime the thread:
 
 ```text
 You are working in Hermes Desktop:
-C:\Users\GAMER PC\.hermes\hermes-builder
+C:\Users\<user>\.hermes\hermes-builder
 
 Read these first for context:
 - docs/plans/2026-05-14-oshikoi-io-shell-integration-plan.md

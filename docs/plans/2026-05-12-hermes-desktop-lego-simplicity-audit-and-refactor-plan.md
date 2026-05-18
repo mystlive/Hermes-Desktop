@@ -3,7 +3,7 @@
 > For Hermes: execute as safe/strangler refactors only. Keep public routes, page entrypoints, and user-visible behavior stable unless explicitly changed in a later product decision.
 
 Date: 2026-05-12
-Repo audited: `/mnt/c/Users/GAMER PC/.hermes/hermes-builder`
+Repo audited: `/mnt/c/Users/<user>/.hermes/hermes-builder`
 Package observed: `hermes-desktop@0.1.0`
 
 ## Goal
