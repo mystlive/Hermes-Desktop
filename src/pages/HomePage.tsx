@@ -9,6 +9,8 @@ import { StatusBadge } from '../components/StatusBadge';
 import { useProfiles } from '../contexts/ProfileContext';
 import { useRuntimeStatus } from '../hooks/useRuntimeStatus';
 import { useGatewayContext } from '../contexts/GatewayContext';
+import { useSessions } from '../features/sessions/SessionsContext';
+import { formatSessionSourceLabel, shouldShowSessionOnHome } from '../features/sessions/sessionPresentation';
 import * as api from '../api';
 import { cn, formatRelativeTime, normalizeUnixTimestampSeconds } from '../lib/utils';
 import type { CronJob, MemoryStore, NavItem, SessionEntry } from '../types';
@@ -21,6 +23,7 @@ interface Props {
 export function HomePage({ onNavigate, onOpenSessionInChat }: Props) {
   const { currentProfile } = useProfiles();
   const gateway = useGatewayContext();
+  const sessionStore = useSessions();
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [memoryStores, setMemoryStores] = useState<MemoryStore[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -31,13 +34,14 @@ export function HomePage({ onNavigate, onOpenSessionInChat }: Props) {
       const [jobsRes, memoryRes] = await Promise.all([
         api.cronjobs.list().catch(() => ({ data: [] })),
         api.memory.get().catch(() => ({ data: [] })),
+        sessionStore.refresh({ silent: true }).catch(() => undefined),
       ]);
       setJobs(Array.isArray(jobsRes.data) ? jobsRes.data : []);
       setMemoryStores(Array.isArray(memoryRes.data) ? memoryRes.data : []);
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [sessionStore]);
 
   useEffect(() => { void loadHomeData(); }, [loadHomeData]);
 
@@ -46,10 +50,15 @@ export function HomePage({ onNavigate, onOpenSessionInChat }: Props) {
   const { status: runtimeStatus } = useRuntimeStatus(gateway);
 
   const recentSessions = useMemo(() => (
-    Object.entries(gateway.sessions)
+    Object.entries(sessionStore.sessions)
+      .filter(([, session]) => shouldShowSessionOnHome(session))
       .sort((a, b) => normalizeSessionTimestamp(b[1]) - normalizeSessionTimestamp(a[1]))
       .slice(0, 4)
-  ), [gateway.sessions]);
+  ), [sessionStore.sessions]);
+
+  const sessionCount = useMemo(() => {
+    return Object.keys(sessionStore.sessions).length;
+  }, [sessionStore.sessions]);
 
   const memoryUsage = useMemo(() => {
     const used = memoryStores.reduce((acc, store) => acc + store.charCount, 0);
@@ -117,7 +126,7 @@ export function HomePage({ onNavigate, onOpenSessionInChat }: Props) {
 
       {/* ── Metrics row ────────────────────────────────────── */}
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Metric label="Sessions" value={recentSessions.length} icon={<MessageSquare size={14} />} />
+        <Metric label="Sessions" value={sessionCount} icon={<MessageSquare size={14} />} />
         <Metric label="Automations" value={activeJobs.length} suffix={`of ${jobs.length}`} icon={<Clock3 size={14} />} />
         <Metric label="Memory" value={memoryUsage.percent || 0} suffix="%" icon={<BrainCircuit size={14} />} />
         <Metric label="Skills" value={gateway.skills.length} icon={<Sparkles size={14} />} />
@@ -133,12 +142,12 @@ export function HomePage({ onNavigate, onOpenSessionInChat }: Props) {
           />
           <div className="mt-4 space-y-2">
             {recentSessions.length === 0 ? (
-              <EmptyState text="No sessions yet. Start chatting to create one." />
+              <EmptyState text={sessionCount > 0 ? 'No recent user-facing sessions yet.' : 'No sessions yet. Start chatting to create one.'} />
             ) : recentSessions.map(([id, session]) => (
               <SessionRow
                 key={id}
                 title={session.title || id}
-                meta={`${session.source || 'api'} · ${session.model || 'default'} · ${formatRelativeTime(session.last_accessed || session.created_at || 0)}`}
+                meta={`${formatSessionSourceLabel(session.source || 'api-server')} · ${session.model || 'default'} · ${formatRelativeTime(session.last_accessed || session.created_at || 0)}`}
                 onOpen={() => onOpenSessionInChat(id)}
               />
             ))}

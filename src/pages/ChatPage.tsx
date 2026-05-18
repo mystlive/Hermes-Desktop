@@ -5,6 +5,7 @@ import { useProfiles } from '../contexts/ProfileContext';
 import { useRuntimeStatus } from '../hooks/useRuntimeStatus';
 import { useGatewayContext } from '../contexts/GatewayContext';
 import { useChat } from '../hooks/useChat';
+import { useSessions } from '../features/sessions/SessionsContext';
 import { Card } from '../components/Card';
 import { ChatToolbar } from '../components/chat/ChatToolbar';
 import { ChatMessages } from '../components/chat/ChatMessages';
@@ -35,6 +36,7 @@ function workspaceSessionTitle(workspace: AgentWorkspace | undefined) {
 export function ChatPage({ requestedSessionId = null, requestNonce = 0 }: Props) {
   const gateway = useGatewayContext();
   const { currentProfile } = useProfiles();
+  const sessionStore = useSessions();
   const { status: chatRuntimeStatus } = useRuntimeStatus(gateway);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -84,28 +86,28 @@ export function ChatPage({ requestedSessionId = null, requestNonce = 0 }: Props)
     try {
       const response = await api.agentStudio.generatePrompt(selectedWorkspaceId);
       try {
-        const created = await api.sessions.create({
+        const created = await sessionStore.createSession({
           source: 'agent-studio-workspace',
           model: chat.model,
           title: workspaceSessionTitle(selectedWorkspace),
           workspace_id: selectedWorkspace?.id,
           workspace_name: selectedWorkspace?.name,
         });
-        if (created.data?.id) {
-          await chat.hydrateSession(String(created.data.id));
+        if (created?.id) {
+          await chat.hydrateSession(String(created.id));
         } else {
           chat.handleNewChat();
         }
       } catch {
         try {
-          const created = await api.sessions.create({
+          const created = await sessionStore.createSession({
             source: 'agent-studio-workspace',
             model: chat.model,
             workspace_id: selectedWorkspace?.id,
             workspace_name: selectedWorkspace?.name,
           });
-          if (created.data?.id) {
-            await chat.hydrateSession(String(created.data.id));
+          if (created?.id) {
+            await chat.hydrateSession(String(created.id));
           } else {
             chat.handleNewChat();
           }

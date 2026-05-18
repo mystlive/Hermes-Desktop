@@ -1,8 +1,10 @@
 import { createContext, useContext } from 'react';
+import type { ProfileMetadata } from '../types';
 
 export interface ProfileContextType {
   currentProfile: string;
   profiles: string[];
+  profileMetadata: ProfileMetadata[];
   isLoading: boolean;
   switchProfile: (name: string) => void;
   createProfile: (name: string) => Promise<void>;

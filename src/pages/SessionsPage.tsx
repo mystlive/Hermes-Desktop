@@ -2,28 +2,22 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { motion } from 'framer-motion';
 import {
   Search, MoreHorizontal, Plus, Trash2, Loader2,
-  Play, MessageSquare, Pencil, Check, X, Download, Scissors,
+  MessageSquare, Pencil, Check, X, Download, Scissors, Sparkles,
   ArrowRight,
 } from 'lucide-react';
 import { Card } from '../components/Card';
 import { PlatformIcon } from '../components/PlatformIcon';
 import { useFeedback } from '../contexts/FeedbackContext';
+import { useSessions } from '../features/sessions/SessionsContext';
+import { formatSessionSourceLabel } from '../features/sessions/sessionPresentation';
 import * as api from '../api';
 import { cn, formatRelativeTime, normalizeUnixTimestampSeconds, parsePlatformFromKey } from '../lib/utils';
-import type { SessionEntry } from '../types';
 
 interface Props {
   onOpenSessionInChat: (sessionId: string | null) => void;
 }
 
 export function SessionsPage({ onOpenSessionInChat }: Props) {
-  const [sessions, setSessions] = useState<Record<string, SessionEntry> | null>(null);
-  const [stats, setStats] = useState<{
-    total_sessions: number;
-    total_messages: number;
-    database_size_bytes: number;
-    by_workspace?: Array<{ workspace_id?: string | null; workspace_name?: string | null; count: number }>;
-  } | null>(null);
   const [search, setSearch] = useState('');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [workspaceFilter, setWorkspaceFilter] = useState<string>('all');
@@ -32,8 +26,11 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [resumingId, setResumingId] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const sessionStore = useSessions();
   const { notify, confirm, prompt } = useFeedback();
   const menuRef = useRef<HTMLDivElement>(null);
+  const sessions = sessionStore.isLoading ? null : sessionStore.sessions;
+  const stats = sessionStore.stats;
 
   // Close menu on outside click
   useEffect(() => {
@@ -46,25 +43,9 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const fetchSessions = async () => {
-    try {
-      const res = await api.sessions.list();
-      setSessions(res.data);
-    } catch { setSessions({}); }
-  };
-
-  const fetchStats = async () => {
-    try {
-      const res = await api.sessions.stats();
-      setStats(res.data || null);
-    } catch { setStats(null); }
-  };
-
-  useEffect(() => { fetchSessions(); fetchStats(); }, []);
-
   const handleCreate = async () => {
     setIsProcessing(true);
-    try { await api.sessions.create(); await fetchSessions(); await fetchStats(); }
+    try { await sessionStore.createSession(); }
     catch (err) { console.error(err); }
     finally { setIsProcessing(false); }
   };
@@ -75,8 +56,7 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
     if (!approved) return;
     setIsProcessing(true);
     try {
-      await api.sessions.delete(id);
-      await fetchSessions(); await fetchStats();
+      await sessionStore.deleteSession(id);
       notify({ tone: 'success', message: 'Session deleted.' });
     } catch { notify({ tone: 'error', message: 'Could not delete.' }); }
     finally { setIsProcessing(false); }
@@ -87,9 +67,8 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
     if (!title) return;
     setIsProcessing(true);
     try {
-      await api.sessions.rename(id, title);
+      await sessionStore.renameSession(id, title);
       setRenamingId(null);
-      await fetchSessions();
       notify({ tone: 'success', message: 'Renamed.' });
     } catch { notify({ tone: 'error', message: 'Could not rename.' }); }
     finally { setIsProcessing(false); }
@@ -99,10 +78,13 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
     setOpenMenuId(null);
     setResumingId(id);
     try {
-      await api.sessions.resume({ mode: 'resume', value: id });
-      await fetchSessions();
-      notify({ tone: 'success', message: 'Resume summary generated.' });
-    } catch { notify({ tone: 'error', message: 'Resume failed.' }); }
+      const result = await sessionStore.resumeSession({ mode: 'resume', value: id });
+      const exchangeCount = result?.recap?.exchanges?.length || 0;
+      notify({
+        tone: 'success',
+        message: exchangeCount > 0 ? `Recap generated (${exchangeCount} exchange${exchangeCount === 1 ? '' : 's'}).` : 'Recap generated.',
+      });
+    } catch { notify({ tone: 'error', message: 'Recap failed.' }); }
     finally { setResumingId(null); }
   };
 
@@ -129,8 +111,7 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
       const approved = await confirm({ title: 'Confirm prune', message: `Delete sessions older than ${days} days?`, confirmLabel: 'Prune', danger: true });
     if (!approved) return;
     try {
-      await api.sessions.prune({ older_than_days: days, source: sourceFilter !== 'all' ? sourceFilter : undefined });
-      await fetchSessions(); await fetchStats();
+      await sessionStore.pruneSessions({ older_than_days: days, source: sourceFilter !== 'all' ? sourceFilter : undefined });
       notify({ tone: 'success', message: `Pruned (> ${days} days).` });
     } catch { notify({ tone: 'error', message: 'Prune failed.' }); }
   };
@@ -155,7 +136,9 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
     if (!sessions) return [];
     const set = new Set<string>();
     for (const [id, s] of Object.entries(sessions)) set.add(String(s.source || parsePlatformFromKey(id) || 'unknown'));
-    return Array.from(set).sort();
+    return Array.from(set).sort((left, right) => (
+      formatSessionSourceLabel(left).localeCompare(formatSessionSourceLabel(right), undefined, { sensitivity: 'base' })
+    ));
   }, [sessions]);
 
   const availableWorkspaces = useMemo(() => {
@@ -194,7 +177,9 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
           </div>
           <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} className="rounded-lg border border-border/60 bg-muted/40 px-2.5 py-1.5 text-sm focus:outline-none" title="Source filter">
             <option value="all">All</option>
-            {availableSources.map(s => <option key={s} value={s}>{s}</option>)}
+            {availableSources.map(source => (
+              <option key={source} value={source}>{formatSessionSourceLabel(source)}</option>
+            ))}
           </select>
           {availableWorkspaces.length > 0 && (
             <select value={workspaceFilter} onChange={e => setWorkspaceFilter(e.target.value)} className="max-w-[220px] rounded-lg border border-border/60 bg-muted/40 px-2.5 py-1.5 text-sm focus:outline-none" title="Workspace filter">
@@ -262,7 +247,7 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
                       </button>
                     )}
                     <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-[11px] text-muted-foreground">{sess.source || platform}</span>
+                      <span className="text-[11px] text-muted-foreground">{formatSessionSourceLabel(sess.source || platform)}</span>
                       <span className="text-[11px] text-muted-foreground/40">·</span>
                       <span className="text-[11px] font-mono text-muted-foreground/60">{sess.model || 'default'}</span>
                       {isRecent && <span className="w-1.5 h-1.5 rounded-full bg-success/60" title="Active recently" />}
@@ -296,7 +281,7 @@ export function SessionsPage({ onOpenSessionInChat }: Props) {
                       {openMenuId === id && (
                         <div className="absolute right-0 top-full mt-1 w-40 bg-popover border border-border rounded-lg shadow-lg py-1 z-50">
                           <MenuButton icon={<MessageSquare size={13} />} label="Open in Chat" onClick={() => { setOpenMenuId(null); onOpenSessionInChat(id); }} />
-                          <MenuButton icon={resumingId === id ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />} label="Resume" onClick={() => handleResume(id)} />
+                          <MenuButton icon={resumingId === id ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} label="Generate recap" onClick={() => handleResume(id)} />
                           <MenuButton icon={<Pencil size={13} />} label="Rename" onClick={() => { setOpenMenuId(null); setRenamingId(id); setRenameValue(String(sess.title || '')); }} />
                           <div className="my-1 border-t border-border/40" />
                           <MenuButton icon={<Trash2 size={13} />} label="Delete" onClick={() => handleDelete(id)} danger />

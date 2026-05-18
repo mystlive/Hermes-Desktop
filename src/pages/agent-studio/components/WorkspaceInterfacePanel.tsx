@@ -1,9 +1,11 @@
-import { CheckCircle2, Loader2, PlaySquare, RotateCcw, Send } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Loader2, MessageSquare, PlaySquare, RotateCcw, Send } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../../../api';
 import { Card } from '../../../components/Card';
+import { useProfiles } from '../../../contexts/ProfileContext';
 import { cn } from '../../../lib/utils';
-import type { AgentDefinition, AgentWorkspace } from '../../../types';
+import type { AgentDefinition, AgentWorkspace, AgentWorkspaceExecutionResult } from '../../../types';
+import { resolveWorkspaceNodeProfile } from '../profileRuntime';
 
 type WorkspaceInterfaceMessage = {
   id: string;
@@ -16,7 +18,10 @@ type WorkspaceInterfacePanelProps = {
   agentsById: Map<string, AgentDefinition>;
   saveWorkspace: () => Promise<AgentWorkspace | null>;
   onError: (message: string) => void;
+  onOpenSessionInChat?: (sessionId: string) => void;
 };
+
+type AgentProgressStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked';
 
 function formatError(error: unknown, fallback: string) {
   if (typeof error === 'object' && error && 'response' in error) {
@@ -31,16 +36,49 @@ function messageId() {
   return `workspace_msg_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
 }
 
+function normalizeAgentProgressStatus(status?: AgentWorkspaceExecutionResult['status'] | string): AgentProgressStatus {
+  if (status === 'failed') return 'failed';
+  if (status === 'blocked') return 'blocked';
+  if (status === 'completed') return 'completed';
+  if (status === 'running') return 'running';
+  return 'pending';
+}
+
+function buildAgentProgress(workspace: AgentWorkspace, result: AgentWorkspaceExecutionResult): Record<string, AgentProgressStatus> {
+  const progress: Record<string, AgentProgressStatus> = {};
+  workspace.nodes.forEach(node => {
+    progress[node.id] = 'pending';
+  });
+
+  const runs = Array.isArray(result.runs) ? result.runs : [];
+  if (runs.length > 0) {
+    runs.forEach(run => {
+      if (!run?.nodeId || !Object.prototype.hasOwnProperty.call(progress, run.nodeId)) return;
+      progress[run.nodeId] = normalizeAgentProgressStatus(run.status || result.status);
+    });
+    return progress;
+  }
+
+  const terminalStatus = normalizeAgentProgressStatus(result.status);
+  workspace.nodes.forEach(node => {
+    progress[node.id] = terminalStatus;
+  });
+  return progress;
+}
+
 export function WorkspaceInterfacePanel({
   workspace,
   agentsById,
   saveWorkspace,
   onError,
+  onOpenSessionInChat,
 }: WorkspaceInterfacePanelProps) {
+  const { currentProfile, profileMetadata } = useProfiles();
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<WorkspaceInterfaceMessage[]>([]);
   const [running, setRunning] = useState(false);
-  const [agentProgress, setAgentProgress] = useState<Record<string, 'pending' | 'running' | 'done'>>({});
+  const [agentProgress, setAgentProgress] = useState<Record<string, AgentProgressStatus>>({});
+  const [latestRunSessionId, setLatestRunSessionId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const timersRef = useRef<{ timeouts: number[]; intervals: number[] }>({ timeouts: [], intervals: [] });
   const runTokenRef = useRef<string | null>(null);
@@ -53,8 +91,13 @@ export function WorkspaceInterfacePanel({
       nodeId: node.id,
       label: node.label || agentsById.get(node.agentId)?.name || `Agent ${index + 1}`,
       index,
+      profileResolution: resolveWorkspaceNodeProfile({
+        requestedProfileName: node.profileName,
+        currentProfile,
+        profileMetadata,
+      }),
     }));
-  }, [agentsById, workspace]);
+  }, [agentsById, currentProfile, profileMetadata, workspace]);
 
   const clearTimers = useCallback(() => {
     for (const timeoutId of timersRef.current.timeouts) window.clearTimeout(timeoutId);
@@ -67,6 +110,7 @@ export function WorkspaceInterfacePanel({
     clearTimers();
     setRunning(false);
     setAgentProgress({});
+    setLatestRunSessionId(null);
     if (!options.keepMessages) setMessages([]);
   }, [clearTimers]);
 
@@ -134,13 +178,14 @@ export function WorkspaceInterfacePanel({
 
     setInput('');
     setRunning(true);
+    setLatestRunSessionId(null);
     onError('');
 
     const userMessage: WorkspaceInterfaceMessage = { id: messageId(), role: 'user', content: task };
     const assistantId = messageId();
     setMessages(current => [...current, userMessage, { id: assistantId, role: 'assistant', content: '' }]);
 
-    const progress: Record<string, 'pending' | 'running' | 'done'> = {};
+    const progress: Record<string, AgentProgressStatus> = {};
     workspace.nodes.forEach((node, index) => {
       progress[node.id] = index === 0 ? 'running' : 'pending';
     });
@@ -163,12 +208,9 @@ export function WorkspaceInterfacePanel({
         mode: saved.defaultMode,
       });
       if (!mountedRef.current || runTokenRef.current !== token) return;
+      setLatestRunSessionId(response.data.session_id || null);
 
-      const doneProgress: Record<string, 'done'> = {};
-      workspace.nodes.forEach((node) => {
-        doneProgress[node.id] = 'done';
-      });
-      setAgentProgress(doneProgress);
+      setAgentProgress(buildAgentProgress(saved, response.data));
 
       const runs = response.data.runs || [];
       const fallback = response.data.output || response.data.prompt || 'No workspace output.';
@@ -176,6 +218,11 @@ export function WorkspaceInterfacePanel({
       revealProgressively(assistantId, runOutput || fallback, token);
     } catch (error) {
       if (!mountedRef.current || runTokenRef.current !== token) return;
+      const failedProgress: Record<string, AgentProgressStatus> = {};
+      workspace.nodes.forEach(node => {
+        failedProgress[node.id] = 'failed';
+      });
+      setAgentProgress(failedProgress);
       const content = formatError(error, 'Could not run workspace task.');
       markAssistantMessage(assistantId, content, token);
       onError(content);
@@ -203,8 +250,13 @@ export function WorkspaceInterfacePanel({
             <h3 className="text-sm font-semibold">{workspace.name}</h3>
             <p className="mt-1 text-xs text-muted-foreground">{workspace.defaultMode} mode</p>
             <p className="mt-3 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-              This interface is a task runner. Runs are isolated, non-conversational, and not persisted as a chat session.
+              This interface is a task runner. Each run is also persisted as a workspace session that you can reopen in Chat.
             </p>
+            {workspace.defaultMode === 'profiles' && (
+              <p className="mt-2 rounded-lg border border-border bg-background px-3 py-2 text-[11px] text-muted-foreground">
+                Nodes run on their pinned profile when set, otherwise they fall back to the current app profile.
+              </p>
+            )}
             <div className="mt-4 grid grid-cols-2 gap-2">
               <div className="rounded-lg border border-border bg-muted/20 p-3">
                 <p className="text-[10px] uppercase text-muted-foreground">Agents</p>
@@ -217,7 +269,7 @@ export function WorkspaceInterfacePanel({
             </div>
 
             <div className="mt-4 space-y-2">
-              {agentRuntimeList.map(({ nodeId, label, index }) => {
+              {agentRuntimeList.map(({ nodeId, label, index, profileResolution }) => {
                 const status = agentProgress[nodeId] || 'pending';
                 return (
                   <div
@@ -226,22 +278,44 @@ export function WorkspaceInterfacePanel({
                       'flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-all',
                       status === 'running'
                         ? 'border-primary/30 bg-primary/8'
-                        : status === 'done'
+                        : status === 'completed'
                           ? 'border-success/20 bg-success/5'
+                          : status === 'failed'
+                            ? 'border-destructive/25 bg-destructive/8'
+                            : status === 'blocked'
+                              ? 'border-amber-500/25 bg-amber-500/8'
                           : 'border-border',
                     )}
                   >
                     <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted text-[10px] font-semibold">
                       {index + 1}
                     </span>
-                    <span className="min-w-0 flex-1 truncate">{label}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{label}</span>
+                      {workspace.defaultMode === 'profiles' && (
+                        <span className={cn(
+                          'block truncate text-[10px]',
+                          profileResolution.status === 'invalid' || profileResolution.status === 'missing'
+                            ? 'text-destructive'
+                            : profileResolution.status === 'offline'
+                              ? 'text-amber-700 dark:text-amber-300'
+                              : 'text-muted-foreground',
+                        )}>
+                          {profileResolution.usesFallback
+                            ? `Current app -> ${profileResolution.effectiveProfileName}`
+                            : profileResolution.effectiveProfileName}
+                        </span>
+                      )}
+                    </span>
                     {status === 'running' && (
                       <span className="relative flex h-2 w-2 shrink-0">
                         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
                         <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
                       </span>
                     )}
-                    {status === 'done' && <CheckCircle2 size={14} className="shrink-0 text-success" />}
+                    {status === 'completed' && <CheckCircle2 size={14} className="shrink-0 text-success" />}
+                    {status === 'failed' && <AlertTriangle size={14} className="shrink-0 text-destructive" />}
+                    {status === 'blocked' && <AlertTriangle size={14} className="shrink-0 text-amber-700 dark:text-amber-300" />}
                     {status === 'pending' && <span className="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/30" />}
                   </div>
                 );
@@ -253,7 +327,7 @@ export function WorkspaceInterfacePanel({
             <div className="flex-1 space-y-3 overflow-auto p-4">
               {messages.length === 0 ? (
                 <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-                  Run an isolated task with this workspace configuration. This panel stores only a local run log.
+                  Run an isolated task with this workspace configuration. The local log mirrors a persisted workspace session.
                 </div>
               ) : messages.map(message => (
                 <div key={message.id} className={message.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
@@ -275,7 +349,15 @@ export function WorkspaceInterfacePanel({
             </div>
 
             <div className="border-t border-border p-3">
-              <div className="mb-2 flex justify-end">
+              <div className="mb-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => latestRunSessionId && onOpenSessionInChat?.(latestRunSessionId)}
+                  disabled={!latestRunSessionId}
+                  className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-40"
+                >
+                  <MessageSquare size={12} /> Open in Chat
+                </button>
                 <button
                   type="button"
                   onClick={() => resetRunState()}

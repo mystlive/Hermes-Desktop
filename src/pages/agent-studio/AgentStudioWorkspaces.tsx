@@ -23,6 +23,7 @@ import { useWorkspaceExecution } from './hooks/useWorkspaceExecution';
 import type {
   AgentDefinition,
   AgentWorkspace,
+  AgentWorkspaceExecutionResult,
   WorkspaceAgentEdge,
   WorkspaceAutoConfigDiffItem,
   WorkspaceAutoConfigPlan,
@@ -30,6 +31,10 @@ import type {
 } from '../../types';
 
 type WorkspaceTab = 'canvas' | 'interface' | 'runs';
+
+type AgentStudioWorkspacesProps = {
+  onOpenSessionInChat?: (sessionId: string | null) => void;
+};
 
 const WORKSPACE_FIELD_LABELS = {
   description: 'Description',
@@ -217,7 +222,7 @@ function buildWorkspaceAutoConfigPlan(
   };
 }
 
-export function AgentStudioWorkspaces() {
+export function AgentStudioWorkspaces({ onOpenSessionInChat }: AgentStudioWorkspacesProps) {
   const navigate = useNavigate();
   const { confirm } = useFeedback();
   const { registerGuard } = useNavigationGuard();
@@ -310,13 +315,20 @@ export function AgentStudioWorkspaces() {
     copyPrompt,
     sendPromptToChat,
     executeWorkspace,
+    openExecutionSessionInChat,
   } = useWorkspaceExecution({
     activeWorkspace,
     saveWorkspace,
     clearLibraryError,
     onError: message => setError(message),
     canNavigateToChat: () => confirmUnsavedChanges('open Chat'),
-    onNavigateToChat: () => navigate('/chat'),
+    onNavigateToChat: sessionId => {
+      if (onOpenSessionInChat) {
+        onOpenSessionInChat(sessionId ?? null);
+        return;
+      }
+      navigate('/chat');
+    },
     onAfterExecute: () => setActiveTab('runs'),
   });
 
@@ -362,6 +374,17 @@ export function AgentStudioWorkspaces() {
       danger: options.danger,
     });
   }, [activeWorkspaceDirty, confirm, unsavedMessage]);
+
+  const openWorkspaceRunInChat = useCallback(async (sessionId: string) => {
+    if (!sessionId) return;
+    const canOpen = await confirmUnsavedChanges('open Chat');
+    if (!canOpen) return;
+    if (onOpenSessionInChat) {
+      onOpenSessionInChat(sessionId);
+      return;
+    }
+    navigate('/chat');
+  }, [confirmUnsavedChanges, navigate, onOpenSessionInChat]);
 
   useEffect(() => {
     return registerGuard(() => confirmUnsavedChanges('leave this page'));
@@ -605,7 +628,7 @@ export function AgentStudioWorkspaces() {
   }, [activeWorkspace, activeWorkspaceDirty, confirm, deleteWorkspace, unsavedMessage]);
 
   const openInterfaceSafely = useCallback(async () => {
-    const canOpen = await confirmUnsavedChanges('open the workspace interface');
+    const canOpen = await confirmUnsavedChanges('open the task runner');
     if (!canOpen) return;
     setActiveTab('interface');
   }, [confirmUnsavedChanges]);
@@ -613,7 +636,7 @@ export function AgentStudioWorkspaces() {
   const changeTabSafely = useCallback(async (tab: WorkspaceTab) => {
     if (tab === activeTab) return;
     if (tab === 'interface') {
-      const canOpen = await confirmUnsavedChanges('open the workspace interface');
+      const canOpen = await confirmUnsavedChanges('open the task runner');
       if (!canOpen) return;
     }
     setActiveTab(tab);
@@ -632,7 +655,7 @@ export function AgentStudioWorkspaces() {
   }, [confirmUnsavedChanges]);
 
   const openQuickWorkspaceInterface = useCallback(async () => {
-    const canOpen = await confirmUnsavedChanges('open the workspace interface');
+    const canOpen = await confirmUnsavedChanges('open the task runner');
     if (!canOpen) return;
     setWorkspaceMode('advanced');
     setActiveTab('interface');
@@ -760,7 +783,7 @@ export function AgentStudioWorkspaces() {
                   className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted"
                 >
                   <MessageSquare size={15} />
-                  Open interface
+                  Open task runner
                 </button>
                 <button
                   type="button"
@@ -888,7 +911,7 @@ export function AgentStudioWorkspaces() {
           }}
 
           nodeCount={activeWorkspace?.nodes.length || 0}
-          hasGeneratedPrompt={Boolean(generatedPrompt)}
+          executionResult={executionResult}
         />
 
         {activeTab === 'canvas' && (
@@ -984,6 +1007,9 @@ export function AgentStudioWorkspaces() {
             agentsById={agentsById}
             saveWorkspace={saveWorkspace}
             onError={message => setError(message)}
+            onOpenSessionInChat={sessionId => {
+              void openWorkspaceRunInChat(sessionId);
+            }}
           />
         )}
 
@@ -1006,6 +1032,9 @@ export function AgentStudioWorkspaces() {
             }}
             onExecuteWorkspace={() => {
               void executeWorkspace();
+            }}
+            onOpenPersistedRun={() => {
+              void openExecutionSessionInChat();
             }}
           />
         )}
@@ -1036,17 +1065,19 @@ function WorkspaceTabs({
   activeTab,
   onChange,
   nodeCount,
-  hasGeneratedPrompt,
+  executionResult,
 }: {
   activeTab: WorkspaceTab;
   onChange: (tab: WorkspaceTab) => void;
   nodeCount: number;
-  hasGeneratedPrompt: boolean;
+  executionResult: AgentWorkspaceExecutionResult | null;
 }) {
+  const executionCount = executionResult?.runs?.length
+    || (executionResult?.session_id || executionResult?.output ? 1 : 0);
   const tabs: Array<{ id: WorkspaceTab; label: string; description: string; count?: string }> = [
     { id: 'canvas', label: 'Canvas', description: 'Compose & edit', count: String(nodeCount) },
-    { id: 'interface', label: 'Interface', description: 'Task runner (non-persistent)', count: String(nodeCount) },
-    { id: 'runs', label: 'Runs', description: 'Execution outputs', count: hasGeneratedPrompt ? '1' : '0' },
+    { id: 'interface', label: 'Task Runner', description: 'Run tasks and open the persisted chat session', count: String(nodeCount) },
+    { id: 'runs', label: 'Execution', description: 'Prompts, outputs and persisted run history', count: String(executionCount) },
   ];
 
   return (

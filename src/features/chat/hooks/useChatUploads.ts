@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import type { ChangeEvent, ClipboardEvent } from 'react';
 import * as apiClient from '../../../api';
 import type { ImageAttachment } from '../../../types';
@@ -12,10 +12,12 @@ export function useChatUploads({ maxImages }: UseChatUploadsOptions) {
   const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>([]);
   const [uploadingImages, setUploadingImages] = useState(false);
   const [imageError, setImageError] = useState<string | null>(null);
+  const uploadGenerationRef = useRef(0);
 
   const attachImageFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
 
+    const generation = uploadGenerationRef.current;
     const availableSlots = maxImages - imageAttachments.length;
     const selectedFiles = files.filter(file => file.type.startsWith('image/')).slice(0, availableSlots);
 
@@ -33,12 +35,16 @@ export function useChatUploads({ maxImages }: UseChatUploadsOptions) {
         const response = await apiClient.images.upload(normalized.fileName, normalized.dataUrl);
         return { ...response.data, dataUrl: normalized.dataUrl, width: normalized.width, height: normalized.height } satisfies ImageAttachment;
       }));
+      if (uploadGenerationRef.current !== generation) return;
       setImageAttachments(current => [...current, ...uploaded]);
     } catch (error) {
+      if (uploadGenerationRef.current !== generation) return;
       console.error(error);
       setImageError('Could not add the image.');
     } finally {
-      setUploadingImages(false);
+      if (uploadGenerationRef.current === generation) {
+        setUploadingImages(false);
+      }
     }
   }, [imageAttachments.length, maxImages]);
 
@@ -47,7 +53,10 @@ export function useChatUploads({ maxImages }: UseChatUploadsOptions) {
   }, []);
 
   const clearImageAttachments = useCallback(() => {
+    uploadGenerationRef.current += 1;
     setImageAttachments([]);
+    setUploadingImages(false);
+    setImageError(null);
   }, []);
 
   const handlePaste = useCallback(async (event: ClipboardEvent<HTMLElement>) => {

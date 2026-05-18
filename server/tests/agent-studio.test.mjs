@@ -550,10 +550,13 @@ test('workspace auto-config preview normalizes model output into safe workspace 
       ],
     });
 
+    const calls = [];
     const preview = await agentStudioService.previewWorkspaceAutoConfig(hermes, workspace.workspace.id, {
       pipelineBrief: 'Planner orchestrates, implementer builds, then review and QA.',
     }, {
-      postGatewayChatCompletion: async () => ({
+      postGatewayChatCompletion: async (_hermes, body) => {
+        calls.push(body);
+        return ({
         choices: [{
           message: {
             content: [
@@ -566,8 +569,8 @@ test('workspace auto-config preview normalizes model output into safe workspace 
                   commonRules: 'Escalate blockers quickly.',
                 },
                 nodes: [
-                  { nodeId: 'node-planner', role: 'orchestrator', skills: ['planning', 'synthesis'] },
-                  { nodeId: 'node-implementer', role: 'worker', toolsets: ['terminal', 'git'] },
+                  { nodeId: 'node-planner', role: 'orchestrator', profileName: 'bad profile', skills: ['planning', 'synthesis'] },
+                  { nodeId: 'node-implementer', role: 'worker', profileName: 'build-profile', toolsets: ['terminal', 'git'] },
                   { nodeId: 'node-missing', role: 'qa' },
                 ],
                 edges: [
@@ -582,15 +585,22 @@ test('workspace auto-config preview normalizes model output into safe workspace 
             ].join('\n'),
           },
         }],
-      }),
+        });
+      },
     });
 
     assert.equal(preview.success, true);
     assert.equal(preview.workspaceId, workspace.workspace.id);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].source, 'agent-studio-auto-config');
+    assert.equal(calls[0].workspace_id, workspace.workspace.id);
+    assert.equal(calls[0].workspace_name, 'Auto Config Workspace');
     assert.equal(preview.suggestion.workspacePatch.defaultMode, 'delegate');
     assert.equal(preview.suggestion.nodes.length, 2);
     assert.equal(preview.suggestion.nodes[0].nodeId, 'node-planner');
     assert.equal(preview.suggestion.nodes[0].role, 'orchestrator');
+    assert.equal(preview.suggestion.nodes[0].profileName, undefined);
+    assert.equal(preview.suggestion.nodes[1].profileName, 'build-profile');
     assert.deepEqual(preview.suggestion.nodes[1].toolsets, ['terminal', 'git']);
     assert.deepEqual(preview.suggestion.nodes.map(node => node.nodeId), ['node-planner', 'node-implementer']);
     assert.equal(preview.suggestion.edges.length, 2);
@@ -624,6 +634,8 @@ test('workspace task runner executes prompt mode with task and relations', async
     });
 
     const calls = [];
+    const started = [];
+    const finished = [];
     assert.equal(typeof agentStudioService.chatWorkspace, 'function');
     const result = await agentStudioService.runWorkspaceTask(hermes, workspace.workspace.id, {
       task: 'Draft a launch plan.',
@@ -632,16 +644,33 @@ test('workspace task runner executes prompt mode with task and relations', async
         calls.push(body);
         return { choices: [{ message: { content: 'workspace answer' } }] };
       },
+      startWorkspaceRunSession: async (_hermes, payload) => {
+        started.push(payload);
+        return 'workspace-run-session';
+      },
+      finishWorkspaceRunSession: async (_hermes, payload) => {
+        finished.push(payload);
+      },
     });
 
     assert.equal(result.success, true);
     assert.equal(result.mode, 'prompt');
     assert.equal(result.output, 'workspace answer');
+    assert.equal(result.session_id, 'workspace-run-session');
     assert.equal(calls[0].source, 'agent-studio-workspace-task-runner');
     assert.equal(calls[0].workspace_id, workspace.workspace.id);
     assert.equal(calls[0].workspace_name, 'Interface Workspace');
     assert.match(calls[0].messages[0].content, /Draft a launch plan/);
     assert.match(calls[0].messages[0].content, /Planner -> Reviewer \(review\)/);
+    assert.equal(started.length, 1);
+    assert.equal(started[0].source, 'agent-studio-workspace-task-runner');
+    assert.equal(started[0].workspace.id, workspace.workspace.id);
+    assert.match(started[0].userMessage, /Draft a launch plan/);
+    assert.equal(finished.length, 1);
+    assert.equal(finished[0].sessionId, 'workspace-run-session');
+    assert.equal(finished[0].toolResults.status, 'completed');
+    assert.equal(finished[0].toolResults.mode, 'prompt');
+    assert.equal(finished[0].toolResults.workspace.name, 'Interface Workspace');
   });
 });
 
@@ -661,22 +690,37 @@ test('workspace delegate execution calls gateway with delegate bridge prompt', a
     });
 
     const calls = [];
+    const started = [];
+    const finished = [];
     const result = await agentStudioService.executeWorkspace(hermes, workspace.workspace.id, {}, {
       postGatewayChatCompletion: async (_hermes, body) => {
         calls.push(body);
         return { choices: [{ message: { content: 'delegate done' } }] };
+      },
+      startWorkspaceRunSession: async (_hermes, payload) => {
+        started.push(payload);
+        return 'delegate-workspace-session';
+      },
+      finishWorkspaceRunSession: async (_hermes, payload) => {
+        finished.push(payload);
       },
     });
 
     assert.equal(result.success, true);
     assert.equal(result.mode, 'delegate');
     assert.equal(result.output, 'delegate done');
+    assert.equal(result.session_id, 'delegate-workspace-session');
     assert.equal(calls.length, 1);
     assert.equal(calls[0].source, 'agent-studio-delegate');
     assert.equal(calls[0].workspace_id, workspace.workspace.id);
     assert.equal(calls[0].workspace_name, 'Delegate Workspace');
     assert.match(calls[0].messages[0].content, /delegate_task/);
     assert.match(calls[0].messages[0].content, /Delegate Workspace/);
+    assert.equal(started.length, 1);
+    assert.equal(started[0].source, 'agent-studio-delegate');
+    assert.equal(finished.length, 1);
+    assert.equal(finished[0].toolResults.mode, 'delegate');
+    assert.equal(finished[0].toolResults.workspace.id, workspace.workspace.id);
   });
 });
 
@@ -719,11 +763,20 @@ test('workspace profile execution uses topological edge order and returns struct
     });
 
     const calls = [];
+    const started = [];
+    const finished = [];
     const result = await agentStudioService.executeWorkspace(hermes, workspace.workspace.id, {}, {
       getHermesContext: async profileName => ({ ...hermes, profile: profileName }),
       postGatewayChatCompletion: async (targetHermes, body) => {
         calls.push({ profile: targetHermes.profile, body });
         return { choices: [{ message: { content: `ran on ${targetHermes.profile}` } }] };
+      },
+      startWorkspaceRunSession: async (_hermes, payload) => {
+        started.push(payload);
+        return 'profile-workspace-session';
+      },
+      finishWorkspaceRunSession: async (_hermes, payload) => {
+        finished.push(payload);
       },
     });
 
@@ -731,6 +784,7 @@ test('workspace profile execution uses topological edge order and returns struct
     assert.equal(result.mode, 'profiles');
     assert.equal(result.status, 'completed');
     assert.equal(result.runs.length, 2);
+    assert.equal(result.session_id, 'profile-workspace-session');
 
     // Topological order follows edge planner -> reviewer, even if node array order is reviewer then planner.
     assert.equal(result.runs[0].nodeId, 'node-planner');
@@ -773,6 +827,82 @@ test('workspace profile execution uses topological edge order and returns struct
     assert.match(calls[1].body.messages[0].content, /ran on plan-profile/);
     assert.match(calls[1].body.messages[0].content, /Downstream Assembly Rules/);
     assert.match(calls[1].body.messages[0].content, /Reviewer Focus/);
+    assert.equal(started.length, 1);
+    assert.equal(started[0].source, 'agent-studio-profile-runtime');
+    assert.equal(finished.length, 1);
+    assert.equal(finished[0].toolResults.status, 'completed');
+    assert.equal(finished[0].toolResults.runs.length, 2);
+    assert.equal(finished[0].toolResults.runs[0].response, undefined);
+  });
+});
+
+test('workspace creation rejects invalid node profile names', async () => {
+  await withHermesFiles(async hermes => {
+    const agent = await agentStudioService.createAgent(hermes, {
+      name: 'Planner',
+      soul: '# Planner Soul',
+    });
+
+    await assert.rejects(
+      agentStudioService.createWorkspace(hermes, {
+        name: 'Invalid Profile Workspace',
+        defaultMode: 'profiles',
+        nodes: [
+          {
+            agentId: agent.agent.id,
+            role: 'worker',
+            profileName: 'bad profile',
+            position: { x: 1, y: 1 },
+          },
+        ],
+      }),
+      error => {
+        assert.equal(error.statusCode, 400);
+        assert.match(error.message, /letters, numbers, ".", "_" and "-"/);
+        return true;
+      },
+    );
+  });
+});
+
+test('workspace profile execution falls back to the current app profile when a node is not pinned', async () => {
+  await withHermesFiles(async hermes => {
+    hermes.profile = 'ops-profile';
+    const agent = await agentStudioService.createAgent(hermes, {
+      name: 'Planner',
+      soul: '# Planner Soul',
+    });
+    const workspace = await agentStudioService.createWorkspace(hermes, {
+      name: 'Fallback Profile Workspace',
+      defaultMode: 'profiles',
+      nodes: [
+        {
+          id: 'node-planner',
+          agentId: agent.agent.id,
+          role: 'worker',
+          label: 'Fallback Planner',
+          position: { x: 1, y: 1 },
+        },
+      ],
+    });
+
+    const requestedProfiles = [];
+    const result = await agentStudioService.executeWorkspace(hermes, workspace.workspace.id, { task: 'Ship it' }, {
+      getHermesContext: async profileName => {
+        requestedProfiles.push(profileName);
+        return { ...hermes, profile: profileName };
+      },
+      postGatewayChatCompletion: async (targetHermes) => ({
+        choices: [{ message: { content: `ran on ${targetHermes.profile}` } }],
+      }),
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.status, 'completed');
+    assert.equal(result.runs.length, 1);
+    assert.equal(result.runs[0].profileName, 'ops-profile');
+    assert.equal(result.runs[0].output, 'ran on ops-profile');
+    assert.deepEqual(requestedProfiles, []);
   });
 });
 

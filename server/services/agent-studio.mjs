@@ -7,6 +7,7 @@ const MANAGED_CATALOG_SOURCES = new Set(['agency-agents', 'aliasrobotics-cai']);
 const VALID_ROLES = new Set(['orchestrator', 'worker', 'reviewer', 'qa', 'observer']);
 const VALID_EDGE_KINDS = new Set(['handoff', 'review', 'qa', 'broadcast', 'escalation']);
 const VALID_MODES = new Set(['prompt', 'delegate', 'profiles']);
+const VALID_PROFILE_NAME_PATTERN = /^[\w.-]+$/;
 const BLOCKING_EXECUTION_EDGE_KINDS = new Set(['handoff', 'review', 'qa']);
 const CONTEXTUAL_EXECUTION_EDGE_KINDS = new Set(['broadcast', 'escalation']);
 const DEFAULT_AGENCY_REPO_URL = 'https://github.com/msitarzewski/agency-agents';
@@ -32,6 +33,17 @@ function cleanString(value) {
 function optionalString(value) {
   const cleaned = cleanString(value);
   return cleaned || undefined;
+}
+
+function normalizeProfileName(value, {
+  fieldLabel = 'Workspace node profileName',
+  onInvalid = 'throw',
+} = {}) {
+  const cleaned = optionalString(value);
+  if (!cleaned) return undefined;
+  if (VALID_PROFILE_NAME_PATTERN.test(cleaned)) return cleaned;
+  if (onInvalid === 'ignore') return undefined;
+  throw createHttpError(400, `${fieldLabel} can only contain letters, numbers, ".", "_" and "-".`);
 }
 
 function asStringArray(value) {
@@ -173,7 +185,7 @@ function normalizeNode(input) {
     agentId,
     role: VALID_ROLES.has(input?.role) ? input.role : 'worker',
     ...(optionalString(input?.label) ? { label: optionalString(input.label) } : {}),
-    ...(optionalString(input?.profileName) ? { profileName: optionalString(input.profileName) } : {}),
+    ...(normalizeProfileName(input?.profileName) ? { profileName: normalizeProfileName(input.profileName) } : {}),
     ...(optionalString(input?.modelOverride) ? { modelOverride: optionalString(input.modelOverride) } : {}),
     toolsets: asStringArray(input?.toolsets),
     skills: asStringArray(input?.skills),
@@ -425,6 +437,78 @@ function buildProfileNodePrompt(workspace, node, agent, agentsById, options = {}
   return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+function buildWorkspaceRunSessionSource(mode) {
+  if (mode === 'delegate') return 'agent-studio-delegate';
+  if (mode === 'profiles') return 'agent-studio-profile-runtime';
+  return 'agent-studio-workspace-task-runner';
+}
+
+function buildWorkspaceRunSessionTitle(workspace, mode) {
+  if (mode === 'delegate') return `Workspace Delegate: ${workspace.name}`;
+  if (mode === 'profiles') return `Workspace Profile Runtime: ${workspace.name}`;
+  return `Workspace Task Run: ${workspace.name}`;
+}
+
+function buildWorkspaceRunSessionUserMessage(workspace, { mode, task, prompt }) {
+  const lines = [
+    `Workspace run requested for ${workspace.name}.`,
+    `Mode: ${mode}`,
+  ];
+  if (task) lines.push('', 'Task:', task);
+  if (prompt) lines.push('', 'Execution prompt:', prompt);
+  return lines.join('\n').trim();
+}
+
+function buildWorkspaceRunSessionAssistantMessage(workspace, result) {
+  const lines = [`Workspace run for ${workspace.name} ${result.status} in ${result.mode} mode.`];
+
+  if (result.workflow?.counts) {
+    const counts = result.workflow.counts;
+    lines.push(
+      '',
+      `Workflow summary: ${counts.completed}/${counts.total} completed, ${counts.failed} failed, ${counts.blocked} blocked.`,
+    );
+    if (result.workflow.qaGate?.required) {
+      lines.push(`QA gate: ${result.workflow.qaGate.status}.`);
+    }
+  }
+
+  const output = cleanString(result.output);
+  const error = cleanString(result.error);
+  if (output) {
+    lines.push('', output);
+  } else if (error) {
+    lines.push('', error);
+  }
+
+  return lines.join('\n').trim();
+}
+
+function sanitizeWorkspaceRunForSession(run) {
+  if (!run || typeof run !== 'object') return run;
+  const { response, ...rest } = run;
+  return rest;
+}
+
+function buildWorkspaceRunSessionToolResults(workspace, result, { task }) {
+  return {
+    type: 'workspace_run',
+    workspace: {
+      id: workspace.id,
+      name: workspace.name,
+    },
+    mode: result.mode,
+    status: result.status,
+    success: Boolean(result.success),
+    task: task || null,
+    prompt: result.prompt || '',
+    output: result.output || '',
+    error: cleanString(result.error) || null,
+    workflow: result.workflow || null,
+    runs: Array.isArray(result.runs) ? result.runs.map(sanitizeWorkspaceRunForSession) : [],
+  };
+}
+
 function buildProfilesExecutionPlan(workspace) {
   const nodes = Array.isArray(workspace?.nodes) ? workspace.nodes : [];
   const edges = Array.isArray(workspace?.edges) ? workspace.edges : [];
@@ -605,7 +689,11 @@ function normalizeAutoConfigNodePatches(input, workspace) {
     const patch = { nodeId };
     if (VALID_ROLES.has(entry?.role)) patch.role = entry.role;
     if (optionalString(entry?.label)) patch.label = optionalString(entry.label);
-    if (optionalString(entry?.profileName)) patch.profileName = optionalString(entry.profileName);
+    const profileName = normalizeProfileName(entry?.profileName, {
+      fieldLabel: 'Workspace auto-config node profileName',
+      onInvalid: 'ignore',
+    });
+    if (profileName) patch.profileName = profileName;
     if (optionalString(entry?.modelOverride)) patch.modelOverride = optionalString(entry.modelOverride);
     if (Object.prototype.hasOwnProperty.call(entry || {}, 'skills')) patch.skills = asStringArray(entry?.skills);
     if (Object.prototype.hasOwnProperty.call(entry || {}, 'toolsets')) patch.toolsets = asStringArray(entry?.toolsets);
@@ -1202,6 +1290,9 @@ export function createAgentStudioService({
     const mode = VALID_MODES.has(payload?.mode) ? payload.mode : workspace.defaultMode;
     const task = cleanString(payload?.task);
     const prompt = buildWorkspacePrompt(workspace, agentsById, { task });
+    const runModel = cleanString(payload?.model) || null;
+    const delegatePrompt = mode === 'delegate' ? buildDelegateBridgePrompt(workspace, prompt) : '';
+    const sessionPrompt = delegatePrompt || prompt;
 
     if (mode === 'prompt' && !executePromptMode) {
       return { success: true, mode, status: 'ready', prompt };
@@ -1211,205 +1302,261 @@ export function createAgentStudioService({
       throw createHttpError(501, 'Workspace execution bridge is not configured');
     }
 
-    if (mode === 'prompt') {
-      const response = await runners.postGatewayChatCompletion(hermes, {
-        ...(payload?.model ? { model: cleanString(payload.model) } : {}),
-        source: 'agent-studio-workspace-task-runner',
-        session_title: `Workspace Task Run: ${workspace.name}`,
-        workspace_id: workspace.id,
-        workspace_name: workspace.name,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      return {
-        success: true,
+    const sessionSource = buildWorkspaceRunSessionSource(mode);
+    const sessionTitle = buildWorkspaceRunSessionTitle(workspace, mode);
+    const sessionId = runners.startWorkspaceRunSession
+      ? await runners.startWorkspaceRunSession(hermes, {
+          source: sessionSource,
+          title: sessionTitle,
+          model: runModel,
+          workspace,
+          mode,
+          task,
+          prompt: sessionPrompt,
+          userMessage: buildWorkspaceRunSessionUserMessage(workspace, { mode, task, prompt: sessionPrompt }),
+        })
+      : null;
+
+    const finishWorkspaceRunSession = async (result) => {
+      if (!sessionId || !runners.finishWorkspaceRunSession) return sessionId;
+      await runners.finishWorkspaceRunSession(hermes, {
+        sessionId,
+        source: sessionSource,
+        title: sessionTitle,
+        model: runModel,
+        workspace,
         mode,
-        status: 'completed',
-        prompt,
-        output: extractAssistantContent(response),
-        response,
-      };
-    }
-
-    if (mode === 'delegate') {
-      const delegatePrompt = buildDelegateBridgePrompt(workspace, prompt);
-      const response = await runners.postGatewayChatCompletion(hermes, {
-        ...(payload?.model ? { model: cleanString(payload.model) } : {}),
-        source: 'agent-studio-delegate',
-        session_title: `Workspace Delegate: ${workspace.name}`,
-        workspace_id: workspace.id,
-        workspace_name: workspace.name,
-        messages: [{ role: 'user', content: delegatePrompt }],
+        task,
+        prompt: result.prompt || sessionPrompt,
+        assistantMessage: buildWorkspaceRunSessionAssistantMessage(workspace, result),
+        toolName: 'workspace_run',
+        toolResults: buildWorkspaceRunSessionToolResults(workspace, result, { task }),
       });
-      return {
-        success: true,
-        mode,
-        status: 'completed',
-        prompt: delegatePrompt,
-        output: extractAssistantContent(response),
-        response,
-      };
-    }
+      return sessionId;
+    };
+    let persistingCompletion = false;
 
-    const { orderedNodes, layers, incomingEdgesByNodeId } = buildProfilesExecutionPlan(workspace);
-    const runs = [];
-    const runByNodeId = new Map();
-    const workflowStartedAt = nowIso();
-
-    const executeNode = async (node) => {
-      const startedAt = nowIso();
-      const agent = agentsById.get(node.agentId);
-      const profileName = cleanString(node.profileName) || hermes.profile || 'default';
-      const label = cleanString(node.label) || agent?.name || node.id;
-      const incomingEdges = incomingEdgesByNodeId.get(node.id) || [];
-      const upstreamByKind = { handoff: [], review: [], qa: [], broadcast: [], escalation: [] };
-      const structuredInputs = { handoff: [], review: [], qa: [], broadcast: [], escalation: [] };
-
-      for (const edge of incomingEdges) {
-        const upstreamRun = runByNodeId.get(edge.fromNodeId);
-        if (!upstreamRun) continue;
-        if (!upstreamByKind[edge.kind]) continue;
-        const sharedInput = {
-          nodeId: upstreamRun.nodeId,
-          label: upstreamRun.label,
-          role: upstreamRun.role,
-          profileName: upstreamRun.profileName,
-          status: upstreamRun.status,
-          output: upstreamRun.output,
-          error: upstreamRun.error,
-          startedAt: upstreamRun.startedAt,
-          finishedAt: upstreamRun.finishedAt,
-          template: edge.template,
-        };
-        upstreamByKind[edge.kind].push({ ...sharedInput, kind: edge.kind });
-        structuredInputs[edge.kind].push(sharedInput);
-      }
-
-      const blockingKinds = [...BLOCKING_EXECUTION_EDGE_KINDS];
-      const blockingInputs = blockingKinds.flatMap(kind => structuredInputs[kind].filter(input => input.status !== 'completed'));
-      const nodePrompt = buildProfileNodePrompt(workspace, node, agent, agentsById, { task, upstreamByKind });
-
-      if (blockingInputs.length > 0) {
-        const reasons = blockingInputs.map(input => `${input.label} [${input.status}]`).join(', ');
-        return {
-          nodeId: node.id,
-          agentId: node.agentId,
-          label,
-          role: node.role,
-          profileName,
-          status: 'blocked',
-          prompt: nodePrompt,
-          inputs: structuredInputs,
-          output: '',
-          error: `Blocked by upstream dependencies: ${reasons}`,
-          startedAt,
-          finishedAt: nowIso(),
-        };
-      }
-
-      try {
-        const targetHermes = node.profileName && runners.getHermesContext
-          ? await runners.getHermesContext(profileName)
-          : hermes;
-        const response = await runners.postGatewayChatCompletion(targetHermes, {
-          ...(node.modelOverride ? { model: node.modelOverride } : {}),
-          source: 'agent-studio-profile-runtime',
-          session_title: `Workspace ${workspace.name}: ${label}`,
+    try {
+      if (mode === 'prompt') {
+        const response = await runners.postGatewayChatCompletion(hermes, {
+          ...(runModel ? { model: runModel } : {}),
+          source: sessionSource,
+          session_title: sessionTitle,
           workspace_id: workspace.id,
           workspace_name: workspace.name,
-          messages: [{ role: 'user', content: nodePrompt }],
+          messages: [{ role: 'user', content: prompt }],
         });
-
-        return {
-          nodeId: node.id,
-          agentId: node.agentId,
-          label,
-          role: node.role,
-          profileName,
+        const result = {
+          success: true,
+          mode,
           status: 'completed',
-          prompt: nodePrompt,
-          inputs: structuredInputs,
+          prompt,
           output: extractAssistantContent(response),
-          error: '',
-          startedAt,
-          finishedAt: nowIso(),
           response,
         };
-      } catch (error) {
-        const message = error?.message || 'Node execution failed';
-        return {
-          nodeId: node.id,
-          agentId: node.agentId,
-          label,
-          role: node.role,
-          profileName,
-          status: 'failed',
-          prompt: nodePrompt,
-          inputs: structuredInputs,
-          output: '',
-          error: message,
-          startedAt,
-          finishedAt: nowIso(),
+        persistingCompletion = true;
+        await finishWorkspaceRunSession(result);
+        return sessionId ? { ...result, session_id: sessionId } : result;
+      }
+
+      if (mode === 'delegate') {
+        const response = await runners.postGatewayChatCompletion(hermes, {
+          ...(runModel ? { model: runModel } : {}),
+          source: sessionSource,
+          session_title: sessionTitle,
+          workspace_id: workspace.id,
+          workspace_name: workspace.name,
+          messages: [{ role: 'user', content: delegatePrompt }],
+        });
+        const result = {
+          success: true,
+          mode,
+          status: 'completed',
+          prompt: delegatePrompt,
+          output: extractAssistantContent(response),
+          response,
         };
+        persistingCompletion = true;
+        await finishWorkspaceRunSession(result);
+        return sessionId ? { ...result, session_id: sessionId } : result;
       }
-    };
 
-    for (const layer of layers) {
-      const layerRuns = await Promise.all(layer.map(node => executeNode(node)));
-      for (const run of layerRuns) {
-        runs.push(run);
-        runByNodeId.set(run.nodeId, run);
-      }
-    }
+      const { orderedNodes, layers, incomingEdgesByNodeId } = buildProfilesExecutionPlan(workspace);
+      const runs = [];
+      const runByNodeId = new Map();
+      const workflowStartedAt = nowIso();
 
-    const counts = {
-      total: runs.length,
-      completed: runs.filter(run => run.status === 'completed').length,
-      failed: runs.filter(run => run.status === 'failed').length,
-      blocked: runs.filter(run => run.status === 'blocked').length,
-    };
-    const hasQaNodes = orderedNodes.some(node => node.role === 'qa');
-    const qaRuns = runs.filter(run => run.role === 'qa');
-    const qaGate = hasQaNodes
-      ? {
-          required: true,
-          status: qaRuns.length > 0 && qaRuns.every(run => run.status === 'completed') ? 'passed' : 'failed',
+      const executeNode = async (node) => {
+        const startedAt = nowIso();
+        const agent = agentsById.get(node.agentId);
+        const profileName = cleanString(node.profileName) || hermes.profile || 'default';
+        const label = cleanString(node.label) || agent?.name || node.id;
+        const incomingEdges = incomingEdgesByNodeId.get(node.id) || [];
+        const upstreamByKind = { handoff: [], review: [], qa: [], broadcast: [], escalation: [] };
+        const structuredInputs = { handoff: [], review: [], qa: [], broadcast: [], escalation: [] };
+
+        for (const edge of incomingEdges) {
+          const upstreamRun = runByNodeId.get(edge.fromNodeId);
+          if (!upstreamRun) continue;
+          if (!upstreamByKind[edge.kind]) continue;
+          const sharedInput = {
+            nodeId: upstreamRun.nodeId,
+            label: upstreamRun.label,
+            role: upstreamRun.role,
+            profileName: upstreamRun.profileName,
+            status: upstreamRun.status,
+            output: upstreamRun.output,
+            error: upstreamRun.error,
+            startedAt: upstreamRun.startedAt,
+            finishedAt: upstreamRun.finishedAt,
+            template: edge.template,
+          };
+          upstreamByKind[edge.kind].push({ ...sharedInput, kind: edge.kind });
+          structuredInputs[edge.kind].push(sharedInput);
         }
-      : {
-          required: false,
-          status: 'not_required',
-        };
 
-    const workflowStatus = counts.failed > 0
-      ? 'failed'
-      : counts.blocked > 0
-        ? 'blocked'
-        : 'completed';
+        const blockingKinds = [...BLOCKING_EXECUTION_EDGE_KINDS];
+        const blockingInputs = blockingKinds.flatMap(kind => structuredInputs[kind].filter(input => input.status !== 'completed'));
+        const nodePrompt = buildProfileNodePrompt(workspace, node, agent, agentsById, { task, upstreamByKind });
 
-    const workflow = {
-      status: workflowStatus,
-      startedAt: workflowStartedAt,
-      finishedAt: nowIso(),
-      counts,
-      qaGate,
-    };
+        if (blockingInputs.length > 0) {
+          const reasons = blockingInputs.map(input => `${input.label} [${input.status}]`).join(', ');
+          return {
+            nodeId: node.id,
+            agentId: node.agentId,
+            label,
+            role: node.role,
+            profileName,
+            status: 'blocked',
+            prompt: nodePrompt,
+            inputs: structuredInputs,
+            output: '',
+            error: `Blocked by upstream dependencies: ${reasons}`,
+            startedAt,
+            finishedAt: nowIso(),
+          };
+        }
 
-    return {
-      success: workflowStatus === 'completed',
-      mode,
-      status: workflowStatus,
-      prompt,
-      workflow,
-      runs,
-      ...(workflowStatus !== 'completed'
-        ? { error: `Workspace profile execution finished with status ${workflowStatus}.` }
-        : {}),
-      output: runs.map(run => {
-        const body = run.status === 'completed'
-          ? (run.output || '(no output)')
-          : `(${run.status}) ${run.error || 'unknown issue'}`;
-        return `## ${run.label} (${run.profileName})\n${body}`;
-      }).join('\n\n'),
-    };
+        try {
+          const targetHermes = node.profileName && runners.getHermesContext
+            ? await runners.getHermesContext(profileName)
+            : hermes;
+          const response = await runners.postGatewayChatCompletion(targetHermes, {
+            ...(node.modelOverride ? { model: node.modelOverride } : {}),
+            source: sessionSource,
+            session_title: `Workspace ${workspace.name}: ${label}`,
+            workspace_id: workspace.id,
+            workspace_name: workspace.name,
+            messages: [{ role: 'user', content: nodePrompt }],
+          });
+
+          return {
+            nodeId: node.id,
+            agentId: node.agentId,
+            label,
+            role: node.role,
+            profileName,
+            status: 'completed',
+            prompt: nodePrompt,
+            inputs: structuredInputs,
+            output: extractAssistantContent(response),
+            error: '',
+            startedAt,
+            finishedAt: nowIso(),
+            response,
+          };
+        } catch (error) {
+          const message = error?.message || 'Node execution failed';
+          return {
+            nodeId: node.id,
+            agentId: node.agentId,
+            label,
+            role: node.role,
+            profileName,
+            status: 'failed',
+            prompt: nodePrompt,
+            inputs: structuredInputs,
+            output: '',
+            error: message,
+            startedAt,
+            finishedAt: nowIso(),
+          };
+        }
+      };
+
+      for (const layer of layers) {
+        const layerRuns = await Promise.all(layer.map(node => executeNode(node)));
+        for (const run of layerRuns) {
+          runs.push(run);
+          runByNodeId.set(run.nodeId, run);
+        }
+      }
+
+      const counts = {
+        total: runs.length,
+        completed: runs.filter(run => run.status === 'completed').length,
+        failed: runs.filter(run => run.status === 'failed').length,
+        blocked: runs.filter(run => run.status === 'blocked').length,
+      };
+      const hasQaNodes = orderedNodes.some(node => node.role === 'qa');
+      const qaRuns = runs.filter(run => run.role === 'qa');
+      const qaGate = hasQaNodes
+        ? {
+            required: true,
+            status: qaRuns.length > 0 && qaRuns.every(run => run.status === 'completed') ? 'passed' : 'failed',
+          }
+        : {
+            required: false,
+            status: 'not_required',
+          };
+
+      const workflowStatus = counts.failed > 0
+        ? 'failed'
+        : counts.blocked > 0
+          ? 'blocked'
+          : 'completed';
+
+      const workflow = {
+        status: workflowStatus,
+        startedAt: workflowStartedAt,
+        finishedAt: nowIso(),
+        counts,
+        qaGate,
+      };
+
+      const result = {
+        success: workflowStatus === 'completed',
+        mode,
+        status: workflowStatus,
+        prompt,
+        workflow,
+        runs,
+        ...(workflowStatus !== 'completed'
+          ? { error: `Workspace profile execution finished with status ${workflowStatus}.` }
+          : {}),
+        output: runs.map(run => {
+          const body = run.status === 'completed'
+            ? (run.output || '(no output)')
+            : `(${run.status}) ${run.error || 'unknown issue'}`;
+          return `## ${run.label} (${run.profileName})\n${body}`;
+        }).join('\n\n'),
+      };
+      persistingCompletion = true;
+      await finishWorkspaceRunSession(result);
+      return sessionId ? { ...result, session_id: sessionId } : result;
+    } catch (error) {
+      if (persistingCompletion) throw error;
+      const failedResult = {
+        success: false,
+        mode,
+        status: 'failed',
+        prompt: sessionPrompt,
+        output: '',
+        error: error?.message || 'Workspace execution failed.',
+      };
+      await finishWorkspaceRunSession(failedResult);
+      throw error;
+    }
   }
 
   async function executeWorkspace(hermes, id, payload = {}, runners = {}) {

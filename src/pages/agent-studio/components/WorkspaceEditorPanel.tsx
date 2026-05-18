@@ -2,6 +2,7 @@ import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { ChevronDown, ArrowRight, Check, Copy, GripVertical, Loader2, Plus, RotateCcw, Send, Sparkles, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { useMemo, useState, useCallback, useRef, type CSSProperties, type MutableRefObject, type ReactNode } from 'react';
 import { Card } from '../../../components/Card';
+import { useProfiles } from '../../../contexts/ProfileContext';
 import { cn } from '../../../lib/utils';
 import type {
   AgentDefinition,
@@ -13,6 +14,10 @@ import type {
   WorkspaceAutoConfigPreviewResult,
   WorkspaceEdgeKind,
 } from '../../../types';
+import {
+  resolveWorkspaceNodeProfile,
+  type WorkspaceNodeProfileResolution,
+} from '../profileRuntime';
 
 const ROLE_OPTIONS: WorkspaceAgentRole[] = ['orchestrator', 'worker', 'reviewer', 'qa', 'observer'];
 const EDGE_KIND_OPTIONS: WorkspaceEdgeKind[] = ['handoff', 'review', 'qa', 'broadcast', 'escalation'];
@@ -55,6 +60,18 @@ function splitCsv(value: string) {
 
 function toCsv(value?: string[]) {
   return (value || []).join(', ');
+}
+
+function formatProfileOptionLabel(
+  profile: { name: string; isDefault?: boolean; status: 'online' | 'offline' },
+  currentProfile: string,
+) {
+  const markers = [
+    profile.name === currentProfile ? 'current' : '',
+    profile.isDefault ? 'default' : '',
+    profile.status === 'offline' ? 'offline' : '',
+  ].filter(Boolean);
+  return markers.length > 0 ? `${profile.name} (${markers.join(', ')})` : profile.name;
 }
 
 export function WorkspaceEditorPanel({
@@ -559,6 +576,7 @@ function InspectorPanel({
   onApplyAndSaveAutoConfig: () => void;
   onDiscardAutoConfig: () => void;
 }) {
+  const { currentProfile, profileMetadata } = useProfiles();
   const autoConfigGroups = useMemo(() => {
     const items = autoConfigPlan?.items || [];
     return [
@@ -569,6 +587,33 @@ function InspectorPanel({
     ].filter(group => group.items.length > 0);
   }, [autoConfigPlan]);
   const canApplyAutoConfig = Boolean(autoConfigPreview && autoConfigPlan?.hasChanges && !autoConfigBusy && !autoConfigSaving);
+  const selectedNodeProfile = useMemo(
+    () => (selectedNode
+      ? resolveWorkspaceNodeProfile({
+        requestedProfileName: selectedNode.profileName,
+        currentProfile,
+        profileMetadata,
+      })
+      : null),
+    [currentProfile, profileMetadata, selectedNode],
+  );
+  const profileOptions = useMemo(() => {
+    if (!selectedNodeProfile) return [];
+    const options = profileMetadata.map(profile => ({
+      value: profile.name,
+      label: formatProfileOptionLabel(profile, currentProfile),
+    }));
+    if (
+      selectedNodeProfile.requestedProfileName
+      && !options.some(option => option.value === selectedNodeProfile.requestedProfileName)
+    ) {
+      options.unshift({
+        value: selectedNodeProfile.requestedProfileName,
+        label: `${selectedNodeProfile.requestedProfileName} (${selectedNodeProfile.status === 'invalid' ? 'invalid' : 'missing'})`,
+      });
+    }
+    return options;
+  }, [currentProfile, profileMetadata, selectedNodeProfile]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({
     node: false,
     workspace: false,
@@ -632,6 +677,25 @@ function InspectorPanel({
                     {ROLE_OPTIONS.map(role => <option key={role} value={role}>{role}</option>)}
                   </select>
                 </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-xs font-medium text-muted-foreground">Profile runtime</span>
+                  <select
+                    value={selectedNodeProfile?.requestedProfileName || ''}
+                    onChange={event => onPatchNode({ profileName: event.target.value || undefined })}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  >
+                    <option value="">Use current app profile ({currentProfile})</option>
+                    {profileOptions.map(option => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                {selectedNodeProfile && (
+                  <NodeProfileHint
+                    resolution={selectedNodeProfile}
+                    profileModeActive={workspace?.defaultMode === 'profiles'}
+                  />
+                )}
                 <InspectorField label="Model override" value={selectedNode.modelOverride || ''} onChange={value => onPatchNode({ modelOverride: value })} />
                 <InspectorField label="Skills" value={toCsv(selectedNode.skills)} onChange={value => onPatchNode({ skills: splitCsv(value) })} />
                 <InspectorField label="Toolsets" value={toCsv(selectedNode.toolsets)} onChange={value => onPatchNode({ toolsets: splitCsv(value) })} />
@@ -1172,5 +1236,52 @@ function InspectorTextArea({
         className="min-h-[96px] w-full resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm leading-6 focus:outline-none focus:ring-2 focus:ring-primary/30"
       />
     </label>
+  );
+}
+
+function NodeProfileHint({
+  resolution,
+  profileModeActive,
+}: {
+  resolution: WorkspaceNodeProfileResolution;
+  profileModeActive: boolean;
+}) {
+  const containerClassName = cn(
+    'rounded-lg border px-3 py-2 text-xs',
+    resolution.status === 'invalid' || resolution.status === 'missing'
+      ? 'border-destructive/20 bg-destructive/5'
+      : resolution.status === 'offline'
+        ? 'border-amber-500/20 bg-amber-500/5'
+        : 'border-border bg-muted/20',
+  );
+  const titleClassName = cn(
+    'font-medium',
+    resolution.status === 'invalid' || resolution.status === 'missing'
+      ? 'text-destructive'
+      : resolution.status === 'offline'
+        ? 'text-amber-700 dark:text-amber-300'
+        : 'text-foreground',
+  );
+  const bodyClassName = cn(
+    'mt-1 leading-5',
+    resolution.status === 'invalid' || resolution.status === 'missing'
+      ? 'text-destructive/90'
+      : resolution.status === 'offline'
+        ? 'text-amber-700/90 dark:text-amber-300/90'
+        : 'text-muted-foreground',
+  );
+
+  return (
+    <div className={containerClassName}>
+      <p className={titleClassName}>
+        {resolution.usesFallback ? 'Runtime target' : 'Pinned profile'}: {resolution.effectiveProfileName}
+      </p>
+      <p className={bodyClassName}>{resolution.detail}</p>
+      {!profileModeActive && (
+        <p className="mt-1.5 text-muted-foreground">
+          This setting is only used when the workspace runs in Profile runtime bridge mode.
+        </p>
+      )}
+    </div>
   );
 }

@@ -8,6 +8,7 @@ import type {
   WorkspaceAgentNode,
   WorkspaceEdgeKind,
 } from '../../../types';
+import { getWorkspaceNodeProfileNameError } from '../profileRuntime';
 
 type TemplatesLoadResult = { ok: boolean; error?: string };
 
@@ -120,6 +121,16 @@ function workspaceFingerprint(workspace: AgentWorkspace) {
 
 function cloneWorkspace(workspace: AgentWorkspace): AgentWorkspace {
   return JSON.parse(JSON.stringify(workspace)) as AgentWorkspace;
+}
+
+function getWorkspaceProfileValidationError(workspace: AgentWorkspace) {
+  for (const node of workspace.nodes || []) {
+    const validationError = getWorkspaceNodeProfileNameError(node.profileName);
+    if (!validationError) continue;
+    const nodeLabel = cleanComparableString(node.label) || node.id || 'Unnamed node';
+    return `Node "${nodeLabel}": ${validationError}`;
+  }
+  return null;
 }
 
 function mapWorkspacesById(workspaces: AgentWorkspace[]) {
@@ -235,6 +246,11 @@ export function useWorkspaceCrud({
 
   const saveWorkspace = useCallback(async () => {
     if (!activeWorkspace) return null;
+    const validationError = getWorkspaceProfileValidationError(activeWorkspace);
+    if (validationError) {
+      setError(validationError);
+      return null;
+    }
     setSaving(true);
     setError('');
     clearLibraryError();
@@ -252,6 +268,11 @@ export function useWorkspaceCrud({
   }, [activeWorkspace, clearLibraryError, markWorkspaceSaved, replaceWorkspace]);
 
   const saveWorkspaceDraft = useCallback(async (workspace: AgentWorkspace) => {
+    const validationError = getWorkspaceProfileValidationError(workspace);
+    if (validationError) {
+      setError(validationError);
+      return null;
+    }
     setSaving(true);
     setError('');
     clearLibraryError();

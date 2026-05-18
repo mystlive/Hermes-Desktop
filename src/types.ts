@@ -30,6 +30,17 @@ export interface GatewayProcessStatus {
   workspace_root?: string;
 }
 
+export interface ProfileMetadata {
+  name: string;
+  isDefault: boolean;
+  model: string;
+  port?: number;
+  status: 'online' | 'offline';
+  managed?: boolean;
+  status_source?: 'managed-profile' | 'shared-global' | 'offline';
+  home?: string;
+}
+
 export interface GatewayHook {
   builderStatus: ConnectionStatus;
   runtimeStatus: ConnectionStatus;
@@ -372,6 +383,34 @@ export interface SessionEntry {
   [key: string]: unknown;
 }
 
+export interface SessionStats {
+  total_sessions: number;
+  total_messages: number;
+  database_size_bytes: number;
+  by_source?: Array<{
+    source?: string | null;
+    count: number;
+  }>;
+  by_workspace?: Array<{
+    workspace_id?: string | null;
+    workspace_name?: string | null;
+    count: number;
+  }>;
+}
+
+export interface SessionResumeRecapExchange {
+  user: string;
+  assistant: string;
+  tool_calls: string[];
+  timestamp?: number | null;
+}
+
+export interface SessionResumeRecap {
+  mode: 'full';
+  hidden_exchanges_count: number;
+  exchanges: SessionResumeRecapExchange[];
+}
+
 export interface ChatToolCall {
   id?: string;
   type?: string;
@@ -582,6 +621,7 @@ export interface AgentWorkspaceExecutionResult {
   success: boolean;
   mode: AgentWorkspace['defaultMode'];
   status: 'ready' | 'completed' | 'failed' | 'blocked';
+  session_id?: string;
   prompt: string;
   output?: string;
   runs?: AgentWorkspaceExecutionRun[];

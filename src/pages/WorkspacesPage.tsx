@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import { AgentStudioWorkspaces } from './agent-studio/AgentStudioWorkspaces';
 
-export function WorkspacesPage() {
+export function WorkspacesPage({ onOpenSessionInChat }: { onOpenSessionInChat?: (sessionId: string | null) => void }) {
   return (
     <motion.div
       key="workspaces"
@@ -11,7 +11,7 @@ export function WorkspacesPage() {
       transition={{ duration: 0.3 }}
       className="mx-auto max-w-7xl space-y-5"
     >
-      <AgentStudioWorkspaces />
+      <AgentStudioWorkspaces onOpenSessionInChat={onOpenSessionInChat} />
     </motion.div>
   );
 }

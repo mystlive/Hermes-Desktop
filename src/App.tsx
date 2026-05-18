@@ -16,6 +16,7 @@ import { GatewayProvider } from './contexts/GatewayProvider';
 import { useProfiles } from './contexts/ProfileContext';
 import { ProfileProvider } from './contexts/ProfileProvider';
 import { useChatSessionOpener } from './features/chat/openChatSession';
+import { SessionsProvider } from './features/sessions/SessionsContext';
 import type { NavItem } from './hooks/useNavigation';
 
 const HomePage = lazy(() => import('./pages/HomePage').then(module => ({ default: module.HomePage })));
@@ -39,11 +40,13 @@ export default function App() {
   return (
     <ProfileProvider>
       <FeedbackProvider>
-        <GatewayProvider>
-          <NavigationGuardProvider>
-            <AppShell />
-          </NavigationGuardProvider>
-        </GatewayProvider>
+        <SessionsProvider>
+          <GatewayProvider>
+            <NavigationGuardProvider>
+              <AppShell />
+            </NavigationGuardProvider>
+          </GatewayProvider>
+        </SessionsProvider>
       </FeedbackProvider>
     </ProfileProvider>
   );
@@ -155,7 +158,7 @@ function AppShell() {
 
                   {/* ── Workspaces (Templates, Workspaces, Kanban) ── */}
                   <Route path="/templates" element={<TemplatesPage />} />
-                  <Route path="/workspaces" element={<WorkspacesPage />} />
+                  <Route path="/workspaces" element={<WorkspacesPage onOpenSessionInChat={openChatSession} />} />
                   <Route path="/kanban" element={<KanbanPage />} />
                   <Route path="/agent-studio" element={<Navigate to="/workspaces" replace />} />
 

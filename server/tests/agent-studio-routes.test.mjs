@@ -35,23 +35,46 @@ function createResponseRecorder() {
   };
 }
 
-test('agent studio routes keep task runner non-persistent while execute and auto-config stay persisted', async () => {
+test('agent studio routes keep gateway execution non-persistent while wiring aggregate run persistence separately', async () => {
   const { app, routes } = createRouteRecorder();
   const callbackCalls = [];
+  const sessionLifecycleCalls = [];
   const nonPersistentGateway = async () => ({ mode: 'non-persistent' });
   const persistedGateway = async () => ({ mode: 'persisted' });
+  const startWorkspaceRunSession = async () => {
+    sessionLifecycleCalls.push('start');
+    return 'workspace-session';
+  };
+  const finishWorkspaceRunSession = async () => {
+    sessionLifecycleCalls.push('finish');
+  };
 
   const agentStudioService = {
     previewWorkspaceAutoConfig: async (_hermes, _workspaceId, _payload, runners) => {
-      callbackCalls.push({ route: 'auto-config', callback: runners.postGatewayChatCompletion });
+      callbackCalls.push({
+        route: 'auto-config',
+        callback: runners.postGatewayChatCompletion,
+        hasStartSession: typeof runners.startWorkspaceRunSession === 'function',
+        hasFinishSession: typeof runners.finishWorkspaceRunSession === 'function',
+      });
       return { success: true };
     },
     executeWorkspace: async (_hermes, _workspaceId, _payload, runners) => {
-      callbackCalls.push({ route: 'execute', callback: runners.postGatewayChatCompletion });
+      callbackCalls.push({
+        route: 'execute',
+        callback: runners.postGatewayChatCompletion,
+        hasStartSession: typeof runners.startWorkspaceRunSession === 'function',
+        hasFinishSession: typeof runners.finishWorkspaceRunSession === 'function',
+      });
       return { success: true };
     },
     runWorkspaceTask: async (_hermes, _workspaceId, _payload, runners) => {
-      callbackCalls.push({ route: 'run', callback: runners.postGatewayChatCompletion });
+      callbackCalls.push({
+        route: 'run',
+        callback: runners.postGatewayChatCompletion,
+        hasStartSession: typeof runners.startWorkspaceRunSession === 'function',
+        hasFinishSession: typeof runners.finishWorkspaceRunSession === 'function',
+      });
       return { success: true };
     },
   };
@@ -62,6 +85,8 @@ test('agent studio routes keep task runner non-persistent while execute and auto
     getHermesContext: async () => ({ profile: 'default' }),
     postGatewayChatCompletion: nonPersistentGateway,
     postPersistedGatewayChatCompletion: persistedGateway,
+    startWorkspaceRunSession,
+    finishWorkspaceRunSession,
   });
 
   const req = { hermes: { profile: 'default' }, params: { id: 'workspace-1' }, body: {} };
@@ -72,12 +97,19 @@ test('agent studio routes keep task runner non-persistent while execute and auto
   await routes.get('POST /api/agent-studio/workspaces/:id/auto-config')(req, createResponseRecorder());
 
   assert.deepEqual(
-    callbackCalls.map(entry => ({ route: entry.route, isNonPersistent: entry.callback === nonPersistentGateway, isPersisted: entry.callback === persistedGateway })),
+    callbackCalls.map(entry => ({
+      route: entry.route,
+      isNonPersistent: entry.callback === nonPersistentGateway,
+      isPersisted: entry.callback === persistedGateway,
+      hasStartSession: entry.hasStartSession,
+      hasFinishSession: entry.hasFinishSession,
+    })),
     [
-      { route: 'run', isNonPersistent: true, isPersisted: false },
-      { route: 'run', isNonPersistent: true, isPersisted: false },
-      { route: 'execute', isNonPersistent: false, isPersisted: true },
-      { route: 'auto-config', isNonPersistent: false, isPersisted: true },
+      { route: 'run', isNonPersistent: true, isPersisted: false, hasStartSession: true, hasFinishSession: true },
+      { route: 'run', isNonPersistent: true, isPersisted: false, hasStartSession: true, hasFinishSession: true },
+      { route: 'execute', isNonPersistent: true, isPersisted: false, hasStartSession: true, hasFinishSession: true },
+      { route: 'auto-config', isNonPersistent: false, isPersisted: true, hasStartSession: false, hasFinishSession: false },
     ],
   );
+  assert.deepEqual(sessionLifecycleCalls, []);
 });

@@ -3,6 +3,7 @@ import type { RefObject } from 'react';
 import * as apiClient from '../api';
 import { useProfiles } from '../contexts/ProfileContext';
 import { useGatewayContext } from '../contexts/GatewayContext';
+import { useSessions } from '../features/sessions/SessionsContext';
 import type { ContextReferenceAttachment } from '../types';
 import { getRuntimeProviderKey, getRuntimeProviderLabel } from './chatProviderRuntime';
 import { getVoiceStatusLabel, type VoiceState } from './chatVoice';
@@ -64,6 +65,7 @@ export function useChat({
 }: UseChatOptions) {
   // ── Dependencies ──────────────────────────────────────────
   const gateway = useGatewayContext();
+  const sessionStore = useSessions();
   const { currentProfile } = useProfiles();
 
   const preferredModel = gateway.config?.model?.default || 'Qwen3.6-27B-UD-IQ3_XXS';
@@ -90,6 +92,7 @@ export function useChat({
     preferredModel,
   );
   const pawrtalAutoStartRef = useRef<string | null>(null);
+  const resetComposerRef = useRef<() => void>(() => {});
 
   // ── Local state ───────────────────────────────────────────
   const [input, setInput] = useState('');
@@ -137,18 +140,14 @@ export function useChat({
   const provider = runtimeProvider === 'profile-default' ? undefined : runtimeProvider;
   const model = preferredModel;
 
+  const triggerComposerReset = useCallback(() => {
+    resetComposerRef.current();
+  }, []);
+
   const clearPendingAttachments = useCallback(() => {
     clearContextReferences();
     clearImageAttachments();
   }, [clearContextReferences, clearImageAttachments]);
-
-  const resetComposer = useCallback(() => {
-    setInput('');
-    clearPendingAttachments();
-    setNewAttachmentValue('');
-    setImageError(null);
-    setVoiceError(null);
-  }, [clearPendingAttachments, setImageError, setNewAttachmentValue]);
 
   const sessionMessagesStorageKey = useCallback(
     (sessionId: string) => getChatMessagesStorageKey(currentProfile, sessionId),
@@ -170,7 +169,7 @@ export function useChat({
     requestNonce,
     sessionStorageKey,
     sessionMessagesStorageKey,
-    resetComposer,
+    resetComposer: triggerComposerReset,
   });
 
   const prepareDraftSession = useCallback(async (draft: StoredChatDraft) => {
@@ -178,15 +177,15 @@ export function useChat({
     const workspaceId = typeof draft.metadata?.workspaceId === 'string' ? draft.metadata.workspaceId : undefined;
     const workspaceName = typeof draft.metadata?.workspaceName === 'string' ? draft.metadata.workspaceName : undefined;
     try {
-      const created = await apiClient.sessions.create({
+      const created = await sessionStore.createSession({
         source: 'agent-studio-workspace',
         model,
         title: workspaceSessionTitle(workspaceName),
         workspace_id: workspaceId,
         workspace_name: workspaceName,
       });
-      if (created.data?.id) {
-        await hydrateSession(String(created.data.id));
+      if (created?.id) {
+        await hydrateSession(String(created.id));
         return;
       }
     } catch {
@@ -194,21 +193,21 @@ export function useChat({
       // pre-creating the titled session fails.
     }
     try {
-      const created = await apiClient.sessions.create({
+      const created = await sessionStore.createSession({
         source: 'agent-studio-workspace',
         model,
         workspace_id: workspaceId,
         workspace_name: workspaceName,
       });
-      if (created.data?.id) {
-        await hydrateSession(String(created.data.id));
+      if (created?.id) {
+        await hydrateSession(String(created.id));
         return;
       }
     } catch {
       // Fall through to a local reset; the prompt still should not mix into the previous chat.
     }
     handleNewChat();
-  }, [handleNewChat, hydrateSession, model]);
+  }, [handleNewChat, hydrateSession, model, sessionStore]);
 
   useChatDraft({ setInput, onDraft: prepareDraftSession });
 
@@ -221,7 +220,7 @@ export function useChat({
   });
 
   // ── Computed: session label ───────────────────────────────
-  const currentSessionMeta = activeSessionId ? gateway.sessions[activeSessionId] : null;
+  const currentSessionMeta = activeSessionId ? sessionStore.sessions[activeSessionId] : null;
   const currentSessionLabel = currentSessionMeta?.title || activeSessionId || null;
 
   // ── Computed: labels ──────────────────────────────────────
@@ -283,12 +282,27 @@ export function useChat({
     speakMessageAt,
     handleMessageAudioEnded,
     handleVoiceToggle,
+    resetVoiceComposerState,
   } = useChatAudio({
     audioRef, streaming, uploadingImages, voiceMode, voiceState, voiceSupported,
     speakingMessageIndex, setVoiceError, setVoiceState, setSpeakingMessageIndex,
     activeSessionId, setActiveSessionId, model, preferredThink,
     messages, imageAttachments, buildAttachedContext, clearPendingAttachments, setMessages,
   });
+
+  const resetComposer = useCallback(() => {
+    // The composer is the whole transient handoff surface: text draft, ref picker,
+    // resolved context, images, upload errors, and in-flight voice state.
+    setInput('');
+    clearPendingAttachments();
+    setNewAttachmentKind('file');
+    setNewAttachmentValue('');
+    setImageError(null);
+    resetVoiceComposerState();
+  }, [clearPendingAttachments, resetVoiceComposerState, setImageError, setNewAttachmentKind, setNewAttachmentValue]);
+  useEffect(() => {
+    resetComposerRef.current = resetComposer;
+  }, [resetComposer]);
 
   const { send } = useChatMessages({
     input, setInput, streaming, setStreaming, uploadingImages, voiceState,

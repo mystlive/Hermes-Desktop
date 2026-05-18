@@ -13,6 +13,8 @@ import type {
   HookInfo,
 } from '../types';
 
+const EMPTY_SESSIONS: Record<string, SessionEntry> = {};
+
 export function useGateway(interval = 4000): GatewayHook {
   const [builderStatus, setBuilderStatus] = useState<ConnectionStatus>('connecting');
   const [state, setState] = useState<GatewayState | null>(null);
@@ -23,7 +25,6 @@ export function useGateway(interval = 4000): GatewayHook {
   const [ollamaStatus, setOllamaStatus] = useState<ConnectionStatus>('connecting');
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [config, setConfig] = useState<HermesConfig | null>(null);
-  const [sessions, setSessions] = useState<Record<string, SessionEntry>>({});
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [hooks, setHooks] = useState<HookInfo[]>([]);
   const [isLoadingMeta, setIsLoadingMeta] = useState(true);
@@ -118,15 +119,13 @@ export function useGateway(interval = 4000): GatewayHook {
 
   const pollMeta = useCallback(async () => {
     try {
-      const [configRes, sessionsRes, skillsRes, hooksRes] = await Promise.allSettled([
+      const [configRes, skillsRes, hooksRes] = await Promise.allSettled([
         api.config.get(),
-        api.sessions.list(),
         api.skills.list(),
         api.hooks.list(),
       ]);
 
       setConfig(configRes.status === 'fulfilled' ? configRes.value.data : null);
-      setSessions(sessionsRes.status === 'fulfilled' && sessionsRes.value.data ? sessionsRes.value.data : {});
       setSkills(skillsRes.status === 'fulfilled' && Array.isArray(skillsRes.value.data) ? skillsRes.value.data : []);
       setHooks(hooksRes.status === 'fulfilled' && Array.isArray(hooksRes.value.data) ? hooksRes.value.data : []);
     } finally {
@@ -171,7 +170,7 @@ export function useGateway(interval = 4000): GatewayHook {
     ollamaStatus,
     models,
     config,
-    sessions,
+    sessions: EMPTY_SESSIONS,
     skills,
     hooks,
     isLoadingMeta,

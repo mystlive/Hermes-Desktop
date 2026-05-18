@@ -9,12 +9,18 @@ interface UseChatDraftOptions {
 
 export function useChatDraft({ setInput, onDraft }: UseChatDraftOptions) {
   useEffect(() => {
+    let cancelled = false;
     const delegatedDraft = consumeDraft();
     if (delegatedDraft?.text) {
       void (async () => {
         await onDraft?.(delegatedDraft);
-        setInput(delegatedDraft.text);
+        if (!cancelled) {
+          setInput(delegatedDraft.text);
+        }
       })();
     }
+    return () => {
+      cancelled = true;
+    };
   }, [onDraft, setInput]);
 }

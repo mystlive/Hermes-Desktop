@@ -11,6 +11,8 @@ export function registerAgentStudioRoutes({
   getHermesContext,
   postGatewayChatCompletion,
   postPersistedGatewayChatCompletion = postGatewayChatCompletion,
+  startWorkspaceRunSession,
+  finishWorkspaceRunSession,
 }) {
   app.get('/api/agent-studio/library', async (req, res) => {
     try {
@@ -122,7 +124,9 @@ export function registerAgentStudioRoutes({
     try {
       res.json(await agentStudioService.executeWorkspace(req.hermes, req.params.id, req.body || {}, {
         getHermesContext,
-        postGatewayChatCompletion: postPersistedGatewayChatCompletion,
+        postGatewayChatCompletion,
+        startWorkspaceRunSession,
+        finishWorkspaceRunSession,
       }));
     } catch (error) {
       respondWithRouteError(res, error, 'Could not execute workspace');
@@ -134,6 +138,8 @@ export function registerAgentStudioRoutes({
       res.json(await agentStudioService.runWorkspaceTask(req.hermes, req.params.id, req.body || {}, {
         getHermesContext,
         postGatewayChatCompletion,
+        startWorkspaceRunSession,
+        finishWorkspaceRunSession,
       }));
     } catch (error) {
       respondWithRouteError(res, error, 'Could not run workspace task');

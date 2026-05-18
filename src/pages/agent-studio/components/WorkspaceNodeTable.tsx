@@ -1,7 +1,12 @@
 import { useMemo, useState } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react';
+import { useProfiles } from '../../../contexts/ProfileContext';
 import { cn } from '../../../lib/utils';
 import type { AgentDefinition, AgentWorkspace } from '../../../types';
+import {
+  resolveWorkspaceNodeProfile,
+  type WorkspaceNodeProfileResolution,
+} from '../profileRuntime';
 
 type SortKey = 'label' | 'role' | 'agent' | 'profileName' | 'modelOverride';
 
@@ -18,6 +23,7 @@ export function WorkspaceNodeTable({
   selectedNodeId,
   onSelectNode,
 }: WorkspaceNodeTableProps) {
+  const { currentProfile, profileMetadata } = useProfiles();
   const [sortKey, setSortKey] = useState<SortKey>('label');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
@@ -47,7 +53,15 @@ export function WorkspaceNodeTable({
           cmp = (aAgent?.name || '').localeCompare(bAgent?.name || '');
           break;
         case 'profileName':
-          cmp = (a.profileName || '').localeCompare(b.profileName || '');
+          cmp = resolveWorkspaceNodeProfile({
+            requestedProfileName: a.profileName,
+            currentProfile,
+            profileMetadata,
+          }).effectiveProfileName.localeCompare(resolveWorkspaceNodeProfile({
+            requestedProfileName: b.profileName,
+            currentProfile,
+            profileMetadata,
+          }).effectiveProfileName);
           break;
         case 'modelOverride':
           cmp = (a.modelOverride || '').localeCompare(b.modelOverride || '');
@@ -56,13 +70,13 @@ export function WorkspaceNodeTable({
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return nodes;
-  }, [workspace.nodes, agentsById, sortKey, sortDir]);
+  }, [agentsById, currentProfile, profileMetadata, sortDir, sortKey, workspace.nodes]);
 
   const columns: Array<{ key: SortKey; label: string; className?: string }> = [
     { key: 'label', label: 'Name', className: 'min-w-[140px]' },
     { key: 'role', label: 'Role', className: 'w-[100px]' },
     { key: 'agent', label: 'Agent', className: 'min-w-[120px]' },
-    { key: 'profileName', label: 'Profile', className: 'w-[120px]' },
+    { key: 'profileName', label: 'Profile', className: 'min-w-[170px]' },
     { key: 'modelOverride', label: 'Model', className: 'min-w-[100px]' },
   ];
 
@@ -136,7 +150,13 @@ export function WorkspaceNodeTable({
                   {agent?.name || '—'}
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">
-                  {node.profileName || '—'}
+                  <NodeProfileCell
+                    resolution={resolveWorkspaceNodeProfile({
+                      requestedProfileName: node.profileName,
+                      currentProfile,
+                      profileMetadata,
+                    })}
+                  />
                 </td>
                 <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
                   {node.modelOverride || '—'}
@@ -174,5 +194,29 @@ function MultiBadge({ items, limit }: { items?: string[]; limit: number }) {
         <span className="text-[10px] text-muted-foreground/50">+{remaining}</span>
       )}
     </span>
+  );
+}
+
+function NodeProfileCell({ resolution }: { resolution: WorkspaceNodeProfileResolution }) {
+  const detailClassName = cn(
+    'text-[10px]',
+    resolution.status === 'invalid' || resolution.status === 'missing'
+      ? 'text-destructive'
+      : resolution.status === 'offline'
+        ? 'text-amber-700 dark:text-amber-300'
+        : 'text-muted-foreground',
+  );
+
+  let detail = 'Pinned profile';
+  if (resolution.status === 'fallback') detail = 'Follows current app profile';
+  if (resolution.status === 'offline') detail = 'Pinned profile is offline';
+  if (resolution.status === 'missing') detail = 'Pinned profile is missing';
+  if (resolution.status === 'invalid') detail = 'Invalid profile name';
+
+  return (
+    <div className="min-w-0">
+      <p className="truncate font-medium text-foreground">{resolution.effectiveProfileName}</p>
+      <p className={detailClassName}>{detail}</p>
+    </div>
   );
 }

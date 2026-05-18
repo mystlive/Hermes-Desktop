@@ -18,6 +18,10 @@ import type {
   PawrtalCommandResult,
   PawrtalCompanion,
   PawrtalStatusResponse,
+  ProfileMetadata,
+  SessionEntry,
+  SessionResumeRecap,
+  SessionStats,
   VoiceChatResponse,
   VoiceSynthesisResponse,
   WorkspaceAutoConfigPreviewResult,
@@ -144,7 +148,7 @@ function diagnosticsCommand(path: string, timeoutMs = DEFAULT_DIAGNOSTICS_TIMEOU
 }
 
 export const profiles = {
-  metadata: () => http.get<Array<{ name: string; isDefault: boolean; model: string; port?: number; status: 'online' | 'offline'; managed?: boolean; status_source?: 'managed-profile' | 'shared-global' | 'offline'; home?: string }>>('/api/profiles/metadata'),
+  metadata: () => http.get<ProfileMetadata[]>('/api/profiles/metadata'),
   create: (name: string) => http.post('/api/profiles', { name }),
   delete: (name: string) => http.delete(`/api/profiles/${encodeURIComponent(name)}`),
 };
@@ -319,19 +323,19 @@ export const config = {
 };
 
 export const sessions = {
-  list: () => http.get('/api/sessions'),
+  list: () => http.get<Record<string, SessionEntry>>('/api/sessions'),
   create: (payload?: { id?: string; source?: string; user_id?: string; title?: string; model?: string; workspace_id?: string; workspace_name?: string }) =>
-    http.post('/api/sessions', payload || {}),
+    http.post<SessionEntry>('/api/sessions', payload || {}),
   resume: (payload: { mode: 'continue' | 'resume'; value?: string; source?: string }) =>
-    http.post('/api/sessions/resume', payload),
-  delete: (id: string) => http.delete(`/api/sessions/${encodeURIComponent(id)}`),
+    http.post<{ session: SessionEntry; recap?: SessionResumeRecap }>('/api/sessions/resume', payload),
+  delete: (id: string) => http.delete<{ success: true }>(`/api/sessions/${encodeURIComponent(id)}`),
   rename: (id: string, title: string) =>
-    http.post(`/api/sessions/${encodeURIComponent(id)}/rename`, { title }),
-  getTitle: (id: string) => http.get(`/api/sessions/${encodeURIComponent(id)}/title`),
+    http.post<{ success: true; id: string; title: string | null }>(`/api/sessions/${encodeURIComponent(id)}/rename`, { title }),
+  getTitle: (id: string) => http.get<{ id: string; title: string | null }>(`/api/sessions/${encodeURIComponent(id)}/title`),
   setTitle: (id: string, title: string | null) =>
-    http.post(`/api/sessions/${encodeURIComponent(id)}/title`, { title }),
+    http.post<{ success: true; id: string; title: string | null }>(`/api/sessions/${encodeURIComponent(id)}/title`, { title }),
   continue: (id: string, payload?: { source?: string; user_id?: string; model?: string; title?: string; workspace_id?: string; workspace_name?: string }) =>
-    http.post(`/api/sessions/${encodeURIComponent(id)}/continue`, payload || {}),
+    http.post<SessionEntry>(`/api/sessions/${encodeURIComponent(id)}/continue`, payload || {}),
   appendMessages: (id: string, payload: {
     messages: Array<{
       role: string;
@@ -343,15 +347,17 @@ export const sessions = {
       tool_results?: unknown;
     }>;
     model?: string;
-    source?: string;
-    user_id?: string;
-    workspace_id?: string;
-    workspace_name?: string;
-  }) => http.post(`/api/sessions/${encodeURIComponent(id)}/messages`, payload),
-  transcript: (id: string) => http.get(`/api/sessions/${encodeURIComponent(id)}/transcript`),
-  stats: () => http.get('/api/sessions/stats'),
-  prune: (payload?: { older_than_days?: number; source?: string }) => http.post('/api/sessions/prune', payload || {}),
-  export: (payload?: { source?: string; session_id?: string; workspace_id?: string; output_path?: string }) => http.post('/api/sessions/export', payload || {}),
+      source?: string;
+      user_id?: string;
+      workspace_id?: string;
+      workspace_name?: string;
+  }) => http.post<{ success: true; inserted: number; session_id: string }>(`/api/sessions/${encodeURIComponent(id)}/messages`, payload),
+  transcript: (id: string) => http.get<Message[]>(`/api/sessions/${encodeURIComponent(id)}/transcript`),
+  stats: () => http.get<SessionStats>('/api/sessions/stats'),
+  prune: (payload?: { older_than_days?: number; source?: string }) =>
+    http.post<{ success: true; deleted: number; older_than_days: number; source?: string | null }>('/api/sessions/prune', payload || {}),
+  export: (payload?: { source?: string; session_id?: string; workspace_id?: string; output_path?: string }) =>
+    http.post<{ count: number; items?: string[]; success?: true; output_path?: string }>('/api/sessions/export', payload || {}),
 };
 
 export const models = {

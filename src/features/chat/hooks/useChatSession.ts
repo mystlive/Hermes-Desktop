@@ -54,6 +54,11 @@ export function useChatSession({
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [usage, setUsage] = useState<ChatUsage | null>(null);
   const hydrateRequestRef = useRef(0);
+  const activeSessionIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
 
   const readPersistedMessages = useCallback((sessionId: string | null): Message[] => {
     if (!sessionId) return [];
@@ -68,6 +73,14 @@ export function useChatSession({
 
   const hydrateSession = useCallback(async (sessionId: string | null) => {
     const requestId = ++hydrateRequestRef.current;
+    const previousSessionId = activeSessionIdRef.current;
+    const shouldResetComposer = previousSessionId !== sessionId;
+    if (shouldResetComposer) {
+      // Reset transient composer state before we swap transcripts so drafts,
+      // refs, images, and voice state never bleed across session handoffs.
+      resetComposer();
+    }
+
     if (!sessionId) {
       setActiveSessionId(null);
       setMessages([]);
@@ -111,7 +124,7 @@ export function useChatSession({
         setMessages([]);
       }
     }
-  }, [readPersistedMessages]);
+  }, [readPersistedMessages, resetComposer]);
 
   const handleNewChat = useCallback(() => {
     setActiveSessionId(null);
@@ -130,10 +143,9 @@ export function useChatSession({
       return;
     }
     queueMicrotask(() => {
-      setActiveSessionId(null);
-      setMessages([]);
+      handleNewChat();
     });
-  }, [currentProfile, hydrateSession, sessionStorageKey]);
+  }, [currentProfile, handleNewChat, hydrateSession, sessionStorageKey]);
 
   useEffect(() => {
     if (!requestNonce) return;

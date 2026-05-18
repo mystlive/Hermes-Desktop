@@ -1,7 +1,8 @@
 /* eslint-disable react-hooks/refs */
-import { useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import type { RefObject } from 'react';
 import type { ImageAttachment, Message, ModelThinkMode } from '../../../types';
+import { useSessions } from '../../sessions/SessionsContext';
 import {
   createAudioRuntime,
   createHandleVoiceToggle,
@@ -56,6 +57,8 @@ export function useChatAudio({
   clearPendingAttachments,
   setMessages,
 }: UseChatAudioOptions) {
+  const sessionStore = useSessions();
+  const voiceFlowIdRef = useRef(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
@@ -126,6 +129,7 @@ export function useChatAudio({
       uploadingImages,
       voiceState,
       voiceSupported,
+      voiceFlowIdRef,
       mediaRecorderRef,
       mediaStreamRef,
       recordedChunksRef,
@@ -139,6 +143,8 @@ export function useChatAudio({
       clearPendingAttachments,
       playAudio,
       stopCurrentVoicePlayback,
+      createSession: sessionStore.createSession,
+      appendMessages: sessionStore.appendMessages,
       setActiveSessionId,
       setMessages,
       setVoiceError,
@@ -154,6 +160,7 @@ export function useChatAudio({
       model,
       playAudio,
       preferredThink,
+      sessionStore,
       setActiveSessionId,
       setMessages,
       setVoiceError,
@@ -166,10 +173,37 @@ export function useChatAudio({
     ],
   );
 
+  const resetVoiceComposerState = useCallback(() => {
+    voiceFlowIdRef.current += 1;
+    recordedChunksRef.current = [];
+
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      try {
+        recorder.stop();
+      } catch {
+        // Continue clearing local voice state even if the recorder was already stopping.
+      }
+    }
+
+    mediaRecorderRef.current = null;
+    const stream = mediaStreamRef.current;
+    mediaStreamRef.current = null;
+    if (stream) {
+      for (const track of stream.getTracks()) track.stop();
+    }
+
+    stopCurrentVoicePlayback();
+    setSpeakingMessageIndex(null);
+    setVoiceError(null);
+    setVoiceState('idle');
+  }, [setSpeakingMessageIndex, setVoiceError, setVoiceState, stopCurrentVoicePlayback]);
+
   return {
     maybeSpeakAssistantReply,
     speakMessageAt,
     handleMessageAudioEnded,
     handleVoiceToggle,
+    resetVoiceComposerState,
   };
 }

@@ -9,7 +9,7 @@ interface UseWorkspaceExecutionOptions {
   clearLibraryError: () => void;
   onError: (message: string) => void;
   canNavigateToChat?: () => Promise<boolean>;
-  onNavigateToChat: () => void;
+  onNavigateToChat: (sessionId?: string | null) => void;
   onAfterExecute?: () => void;
 }
 
@@ -87,7 +87,7 @@ export function useWorkspaceExecution({
         mode: activeWorkspace.defaultMode,
       },
     });
-    onNavigateToChat();
+    onNavigateToChat(null);
   }, [activeWorkspace, canNavigateToChat, generatedPrompt, onNavigateToChat, saveWorkspace]);
 
   const executeWorkspace = useCallback(async () => {
@@ -110,6 +110,13 @@ export function useWorkspaceExecution({
     }
   }, [activeWorkspace, clearLibraryError, onAfterExecute, onError, saveWorkspace]);
 
+  const openExecutionSessionInChat = useCallback(async () => {
+    const sessionId = executionResult?.session_id;
+    if (!sessionId) return;
+    if (canNavigateToChat && !(await canNavigateToChat())) return;
+    onNavigateToChat(sessionId);
+  }, [canNavigateToChat, executionResult?.session_id, onNavigateToChat]);
+
   return {
     generatedPrompt,
     executionResult,
@@ -123,5 +130,6 @@ export function useWorkspaceExecution({
     copyPrompt,
     sendPromptToChat,
     executeWorkspace,
+    openExecutionSessionInChat,
   };
 }

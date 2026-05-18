@@ -238,6 +238,69 @@ async function postPersistedDesktopGatewayChatCompletion(hermes, body = {}, opti
   return data;
 }
 
+async function startPersistedWorkspaceRunSession(hermes, payload = {}) {
+  const workspaceId = payload?.workspace?.id ? String(payload.workspace.id).trim() : null;
+  const workspaceName = payload?.workspace?.name ? String(payload.workspace.name).trim() : null;
+  const sessionId = String(payload?.sessionId || '').trim() || makeSessionId();
+  const title = sanitizeSessionTitle(payload?.title) || payload?.title || 'Workspace Run';
+  const source = String(payload?.source || 'agent-studio-workspace-task-runner');
+  const model = payload?.model ? String(payload.model).trim() : null;
+
+  upsertSession(hermes, sessionId, {
+    source,
+    title,
+    model,
+    workspaceId,
+    workspaceName,
+    startedAt: nowTs(),
+  });
+
+  const userMessage = String(payload?.userMessage || '').trim();
+  if (userMessage) {
+    insertMessages(hermes, sessionId, [{
+      role: 'user',
+      content: userMessage,
+      timestamp: nowTs(),
+    }]);
+  }
+
+  return sessionId;
+}
+
+async function finishPersistedWorkspaceRunSession(hermes, payload = {}) {
+  const sessionId = String(payload?.sessionId || '').trim();
+  if (!sessionId) return null;
+
+  const workspaceId = payload?.workspace?.id ? String(payload.workspace.id).trim() : null;
+  const workspaceName = payload?.workspace?.name ? String(payload.workspace.name).trim() : null;
+  const title = sanitizeSessionTitle(payload?.title) || payload?.title || 'Workspace Run';
+  const source = String(payload?.source || 'agent-studio-workspace-task-runner');
+  const model = payload?.model ? String(payload.model).trim() : null;
+
+  upsertSession(hermes, sessionId, {
+    source,
+    title,
+    model,
+    workspaceId,
+    workspaceName,
+    endedAt: nowTs(),
+  });
+
+  const assistantMessage = String(payload?.assistantMessage || '').trim();
+  const toolResults = payload?.toolResults ?? null;
+  if (assistantMessage || toolResults) {
+    insertMessages(hermes, sessionId, [{
+      role: 'assistant',
+      content: assistantMessage || 'Workspace run recorded.',
+      tool_name: payload?.toolName ? String(payload.toolName) : null,
+      tool_results: toolResults,
+      timestamp: nowTs(),
+    }]);
+  }
+
+  return sessionId;
+}
+
 // ── Express App Setup ───────────────────────────────────────────────
 const app = express();
 const isLocalRequest = createLocalRequestChecker({ trustProxy: TRUST_PROXY });
@@ -459,6 +522,8 @@ registerAgentStudioRoutes({
   getHermesContext,
   postGatewayChatCompletion: postDesktopGatewayChatCompletion,
   postPersistedGatewayChatCompletion: postPersistedDesktopGatewayChatCompletion,
+  startWorkspaceRunSession: startPersistedWorkspaceRunSession,
+  finishWorkspaceRunSession: finishPersistedWorkspaceRunSession,
 });
   registerConfigRoutes({ app, runtimeFilesService });
   registerContextReferenceRoutes({ app, contextReferenceService });

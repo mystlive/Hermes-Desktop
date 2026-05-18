@@ -104,7 +104,7 @@ test('continuation sessions keep lineage metadata and recap includes parsed tool
   });
 });
 
-test('sessions store workspace metadata and update it without losing existing values', async () => {
+test('sessions store workspace metadata and preserve source during metadata-only updates', async () => {
   await withHermesContext(async ({ hermes }) => {
     upsertSession(hermes, 'workspace-session', {
       source: 'agent-studio-workspace',
@@ -115,10 +115,11 @@ test('sessions store workspace metadata and update it without losing existing va
     });
 
     let row = hermes.db.prepare(`
-      SELECT workspace_id, workspace_name
+      SELECT source, workspace_id, workspace_name
       FROM sessions
       WHERE id = ?
     `).get('workspace-session');
+    assert.equal(row.source, 'agent-studio-workspace');
     assert.equal(row.workspace_id, 'workspace_mvp');
     assert.equal(row.workspace_name, 'MVP Builder');
 
@@ -127,10 +128,11 @@ test('sessions store workspace metadata and update it without losing existing va
     });
 
     row = hermes.db.prepare(`
-      SELECT workspace_id, workspace_name, model
+      SELECT source, workspace_id, workspace_name, model
       FROM sessions
       WHERE id = ?
     `).get('workspace-session');
+    assert.equal(row.source, 'agent-studio-workspace');
     assert.equal(row.workspace_id, 'workspace_mvp');
     assert.equal(row.workspace_name, 'MVP Builder');
     assert.equal(row.model, 'gpt-test-updated');

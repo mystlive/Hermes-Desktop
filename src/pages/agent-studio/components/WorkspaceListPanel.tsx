@@ -72,7 +72,7 @@ export function WorkspaceListPanel({
           className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50"
         >
           <MessageSquare size={15} />
-          Generate interface
+          Open task runner
         </button>
         <button
           onClick={onDeleteWorkspace}

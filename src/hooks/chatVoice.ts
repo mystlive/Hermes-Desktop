@@ -262,6 +262,7 @@ interface CreateVoiceToggleParams {
   uploadingImages: boolean;
   voiceState: VoiceState;
   voiceSupported: boolean;
+  voiceFlowIdRef: { current: number };
   mediaRecorderRef: { current: MediaRecorder | null };
   mediaStreamRef: { current: MediaStream | null };
   recordedChunksRef: { current: Blob[] };
@@ -275,6 +276,23 @@ interface CreateVoiceToggleParams {
   clearPendingAttachments: () => void;
   playAudio: (audioUrl: string) => Promise<void>;
   stopCurrentVoicePlayback: () => void;
+  createSession: (payload?: { id?: string; source?: string; user_id?: string; title?: string; model?: string; workspace_id?: string; workspace_name?: string }) => Promise<{ id?: string } | null>;
+  appendMessages: (id: string, payload: {
+    messages: Array<{
+      role: string;
+      content: string;
+      timestamp?: number;
+      token_count?: number;
+      tool_calls?: unknown;
+      tool_name?: string;
+      tool_results?: unknown;
+    }>;
+    model?: string;
+    source?: string;
+    user_id?: string;
+    workspace_id?: string;
+    workspace_name?: string;
+  }) => Promise<void>;
   setActiveSessionId: SetState<string | null>;
   setMessages: SetState<Message[]>;
   setVoiceError: SetState<string | null>;
@@ -291,7 +309,13 @@ export function createHandleVoiceToggle(params: CreateVoiceToggleParams): () => 
     try {
       params.setVoiceError(null);
       params.audioRef.current?.pause();
+      const flowId = params.voiceFlowIdRef.current + 1;
+      params.voiceFlowIdRef.current = flowId;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (params.voiceFlowIdRef.current !== flowId) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
       params.mediaStreamRef.current = stream;
       params.recordedChunksRef.current = [];
 
@@ -305,6 +329,11 @@ export function createHandleVoiceToggle(params: CreateVoiceToggleParams): () => 
 
       recorder.addEventListener('stop', async () => {
         stopMicrophoneCapture(params.mediaRecorderRef, params.mediaStreamRef);
+        if (params.voiceFlowIdRef.current !== flowId) {
+          params.recordedChunksRef.current = [];
+          params.setVoiceState('idle');
+          return;
+        }
         const blob = new Blob(params.recordedChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
         params.recordedChunksRef.current = [];
 
@@ -318,19 +347,27 @@ export function createHandleVoiceToggle(params: CreateVoiceToggleParams): () => 
           let sessionId = params.activeSessionId;
           if (!sessionId) {
             try {
-              const created = await apiClient.sessions.create({ source: 'api-server', model: effectiveModel });
-              sessionId = created.data?.id || null;
+              const created = await params.createSession({ source: 'api-server', model: effectiveModel });
+              sessionId = created?.id || null;
               if (sessionId) params.setActiveSessionId(sessionId);
             } catch { sessionId = null; }
           }
 
           const audioDataUrl = await readBlobAsDataUrl(blob);
+          if (params.voiceFlowIdRef.current !== flowId) {
+            params.setVoiceState('idle');
+            return;
+          }
           const contextText = params.buildAttachedContext();
           const response = await apiClient.voice.respond({
             model: effectiveModel, think: params.preferredThink,
             messages: params.messages.map(m => ({ role: m.role, content: m.content })),
             audioDataUrl, contextText, images: params.imageAttachments,
           });
+          if (params.voiceFlowIdRef.current !== flowId) {
+            params.setVoiceState('idle');
+            return;
+          }
 
           const now = Date.now();
           const userVoiceMessage: Message = { role: 'user', content: response.data.transcript, timestamp: now, isVoice: true };
@@ -343,7 +380,7 @@ export function createHandleVoiceToggle(params: CreateVoiceToggleParams): () => 
           params.setMessages(current => [...current, userVoiceMessage, assistantVoiceMessage]);
 
           if (sessionId) {
-            apiClient.sessions.appendMessages(sessionId, {
+            params.appendMessages(sessionId, {
               model: effectiveModel, source: 'api-server',
               messages: [
                 { role: 'user', content: userVoiceMessage.content, timestamp: userVoiceMessage.timestamp },
@@ -352,6 +389,10 @@ export function createHandleVoiceToggle(params: CreateVoiceToggleParams): () => 
             }).catch(() => {});
           }
 
+          if (params.voiceFlowIdRef.current !== flowId) {
+            params.setVoiceState('idle');
+            return;
+          }
           await params.playAudio(response.data.audioUrl);
         } catch (error) {
           console.error(error);

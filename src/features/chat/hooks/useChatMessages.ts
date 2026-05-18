@@ -3,6 +3,7 @@ import * as apiClient from '../../../api';
 import { buildVisionContent } from '../../../hooks/chatMediaUtils';
 import { createMessageMutations } from '../../../hooks/chatMessageMutations';
 import type { ChatProvider } from '../../../hooks/chatProviderRuntime';
+import { useSessions } from '../../sessions/SessionsContext';
 import { normalizeGatewayUsage, normalizeToolCallDeltas, parseSseChunk } from '../../../lib/sseParser';
 import { mergeToolCallDeltas, normalizeToolCalls } from '../chatToolCalls';
 import { mergeUsage } from '../chatUsage';
@@ -62,6 +63,7 @@ export function useChatMessages({
   maybeSpeakAssistantReply,
   handleLocalCommand,
 }: UseChatMessagesOptions) {
+  const sessionStore = useSessions();
   const {
     updateLastAssistantMessage,
   } = useMemo(
@@ -97,8 +99,8 @@ export function useChatMessages({
     let sessionId = activeSessionId;
     if (!sessionId) {
       try {
-        const created = await apiClient.sessions.create({ source: 'api-server', model: effectiveModel });
-        sessionId = created.data?.id || null;
+        const created = await sessionStore.createSession({ source: 'api-server', model: effectiveModel });
+        sessionId = created?.id || null;
         if (sessionId) setActiveSessionId(sessionId);
       } catch {
         sessionId = null;
@@ -210,6 +212,7 @@ export function useChatMessages({
         if (!sessionId && response.data?.session_id) {
           sessionId = String(response.data.session_id);
           setActiveSessionId(sessionId);
+          void sessionStore.refresh({ silent: true });
         }
         updateLastAssistantMessage(message => ({
           ...message,
@@ -229,7 +232,7 @@ export function useChatMessages({
       }
 
       if (sessionId && !persistedByGateway && (finalAssistantText || finalAssistantToolCalls?.length || finalAssistantToolName || finalAssistantToolResults != null)) {
-        apiClient.sessions.appendMessages(sessionId, {
+        sessionStore.appendMessages(sessionId, {
           model: effectiveModel,
           source: 'api-server',
           messages: [
@@ -261,6 +264,7 @@ export function useChatMessages({
     model,
     preferredThink,
     provider,
+    sessionStore,
     setActiveSessionId,
     setInput,
     setMessages,
