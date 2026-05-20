@@ -141,9 +141,22 @@ function extractToolCallDeltas(payload) {
   if (!payload || typeof payload !== 'object') return null;
   const choices = payload.choices;
   if (!Array.isArray(choices) || choices.length === 0) return null;
-  const delta = choices?.[0]?.delta;
-  if (!delta || typeof delta !== 'object') return null;
-  return delta.tool_calls ?? null;
+  const firstChoice = choices?.[0];
+  if (!firstChoice || typeof firstChoice !== 'object') return null;
+
+  const delta = firstChoice.delta;
+  if (delta && typeof delta === 'object') {
+    const deltaToolCalls = delta.tool_calls;
+    if (deltaToolCalls != null) return deltaToolCalls;
+  }
+
+  const message = firstChoice.message;
+  if (message && typeof message === 'object') {
+    const messageToolCalls = message.tool_calls;
+    if (messageToolCalls != null) return messageToolCalls;
+  }
+
+  return null;
 }
 
 function extractSseError(eventName, payload) {

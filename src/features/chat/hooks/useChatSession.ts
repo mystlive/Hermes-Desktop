@@ -37,6 +37,7 @@ function normalizePersistedMessages(
       isVoice: item.isVoice === true,
       tokenCount: typeof item.tokenCount === 'number' ? item.tokenCount : undefined,
       toolCalls: normalizeToolCalls(item.toolCalls),
+      toolCallsBeforeContent: typeof item.toolCallsBeforeContent === 'boolean' ? item.toolCallsBeforeContent : undefined,
       toolName: typeof item.toolName === 'string' ? item.toolName : undefined,
       toolResults: Object.prototype.hasOwnProperty.call(item, 'toolResults') ? item.toolResults : undefined,
     }));
@@ -109,6 +110,9 @@ export function useChatSession({
                 ? Number((entry as { token_count?: unknown }).token_count)
                 : undefined,
               toolCalls: normalizeToolCalls((entry as { tool_calls?: unknown }).tool_calls),
+              toolCallsBeforeContent: typeof (entry as { tool_calls_before_content?: unknown }).tool_calls_before_content === 'boolean'
+                ? Boolean((entry as { tool_calls_before_content?: unknown }).tool_calls_before_content)
+                : undefined,
               toolName: typeof (entry as { tool_name?: unknown }).tool_name === 'string'
                 ? String((entry as { tool_name?: unknown }).tool_name)
                 : undefined,

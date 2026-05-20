@@ -440,6 +440,7 @@ export interface Message {
   isVoice?: boolean;
   tokenCount?: number;
   toolCalls?: ChatToolCall[];
+  toolCallsBeforeContent?: boolean;
   toolName?: string;
   toolResults?: unknown;
 }

@@ -5,7 +5,7 @@ import { createMessageMutations } from '../../../hooks/chatMessageMutations';
 import type { ChatProvider } from '../../../hooks/chatProviderRuntime';
 import { useSessions } from '../../sessions/SessionsContext';
 import { normalizeGatewayUsage, normalizeToolCallDeltas, parseSseChunk } from '../../../lib/sseParser';
-import { mergeToolCallDeltas, normalizeToolCalls } from '../chatToolCalls';
+import { mergeToolCallDeltas, normalizeToolCalls, normalizeToolProgress } from '../chatToolCalls';
 import { mergeUsage } from '../chatUsage';
 import type {
   ChatToolCall,
@@ -119,11 +119,12 @@ export function useChatMessages({
     ];
 
     let finalAssistantText = '';
-    let finalAssistantToolCalls: ReturnType<typeof normalizeToolCalls> = undefined;
-    let finalAssistantToolName: string | undefined;
-    let finalAssistantToolResults: unknown;
-    let persistedByGateway = false;
-    let accumulatedUsage: ChatUsage | null = null;
+      let finalAssistantToolCalls: ReturnType<typeof normalizeToolCalls> = undefined;
+      let finalAssistantToolName: string | undefined;
+      let finalAssistantToolResults: unknown;
+      let finalAssistantToolCallsBeforeContent = false;
+      let persistedByGateway = false;
+      let accumulatedUsage: ChatUsage | null = null;
 
     try {
       const response = await apiClient.gateway.streamChat({
@@ -162,7 +163,24 @@ export function useChatMessages({
           if (Array.isArray(toolCallDeltas) && toolCallDeltas.length > 0) {
             accumulatedToolCalls = mergeToolCallDeltas(accumulatedToolCalls, toolCallDeltas);
             finalAssistantToolCalls = accumulatedToolCalls;
-            updateLastAssistantMessage(message => ({ ...message, toolCalls: accumulatedToolCalls }));
+            finalAssistantToolCallsBeforeContent = finalAssistantToolCallsBeforeContent || accumulated.length === 0;
+            updateLastAssistantMessage(message => ({
+              ...message,
+              toolCalls: accumulatedToolCalls,
+              toolCallsBeforeContent: finalAssistantToolCallsBeforeContent,
+            }));
+          }
+
+          const toolProgressDeltas = normalizeToolProgress(event.toolProgress);
+          if (Array.isArray(toolProgressDeltas) && toolProgressDeltas.length > 0) {
+            accumulatedToolCalls = mergeToolCallDeltas(accumulatedToolCalls, toolProgressDeltas);
+            finalAssistantToolCalls = accumulatedToolCalls;
+            finalAssistantToolCallsBeforeContent = finalAssistantToolCallsBeforeContent || accumulated.length === 0;
+            updateLastAssistantMessage(message => ({
+              ...message,
+              toolCalls: accumulatedToolCalls,
+              toolCallsBeforeContent: finalAssistantToolCallsBeforeContent,
+            }));
           }
 
           if (!event.contentDelta) continue;
@@ -218,6 +236,7 @@ export function useChatMessages({
           ...message,
           content,
           toolCalls: finalAssistantToolCalls,
+          toolCallsBeforeContent: Boolean(finalAssistantToolCalls?.length) && !content.trim(),
           toolName: finalAssistantToolName,
           toolResults: finalAssistantToolResults,
         }));

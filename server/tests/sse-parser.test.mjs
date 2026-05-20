@@ -80,6 +80,19 @@ test('handles custom hermes tool progress events', () => {
   assert.deepEqual(event.toolProgress, { tool: 'search', progress: 50 });
 });
 
+test('extracts tool call deltas from message fallback payloads', () => {
+  const event = parseSseBlock('data: {"choices":[{"message":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"terminal","arguments":"{\\"command\\":\\"pwd\\"}"}}]}}]}\n');
+  assert.ok(event);
+  assert.deepEqual(event.toolCallDeltas, [{
+    id: 'call_1',
+    type: 'function',
+    function: {
+      name: 'terminal',
+      arguments: '{"command":"pwd"}',
+    },
+  }]);
+});
+
 test('parses multi-block SSE streams with buffer carry-over', () => {
   const first = parseSseChunk('', 'data: {"choices":[{"delta":{"content":"He"}}]}\n\n' +
     'data: {"usage":{"total_tokens":2}}\n\n' +

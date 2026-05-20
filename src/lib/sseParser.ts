@@ -211,9 +211,20 @@ function extractToolCallDeltas(payload: unknown): unknown {
   if (!Array.isArray(choices) || choices.length === 0) return null;
   const firstChoice = choices[0];
   if (!firstChoice || typeof firstChoice !== 'object') return null;
+
   const delta = (firstChoice as { delta?: unknown }).delta;
-  if (!delta || typeof delta !== 'object') return null;
-  return (delta as { tool_calls?: unknown }).tool_calls ?? null;
+  if (delta && typeof delta === 'object') {
+    const deltaToolCalls = (delta as { tool_calls?: unknown }).tool_calls;
+    if (deltaToolCalls != null) return deltaToolCalls;
+  }
+
+  const message = (firstChoice as { message?: unknown }).message;
+  if (message && typeof message === 'object') {
+    const messageToolCalls = (message as { tool_calls?: unknown }).tool_calls;
+    if (messageToolCalls != null) return messageToolCalls;
+  }
+
+  return null;
 }
 
 function extractSseError(eventName: string | null, payload: unknown): string | null {

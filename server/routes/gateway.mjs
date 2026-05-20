@@ -86,6 +86,91 @@ export function registerGatewayRoutes({
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
     };
 
+    const toolProgressCallIdsByTool = new Map();
+    let syntheticToolCallCounter = 0;
+
+    const firstNonEmptyString = (...values) => {
+      for (const value of values) {
+        if (typeof value !== 'string') continue;
+        const trimmed = value.trim();
+        if (trimmed) return trimmed;
+      }
+      return null;
+    };
+
+    const stringifyToolArguments = (value) => {
+      if (typeof value === 'string') return value.trim();
+      if (value == null) return '';
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    };
+
+    const buildToolCallFromProgress = (rawProgress) => {
+      if (!rawProgress || typeof rawProgress !== 'object') return null;
+      const progress = rawProgress;
+      const toolName = firstNonEmptyString(
+        progress.tool,
+        progress.tool_name,
+        progress.toolName,
+        progress.name,
+        progress.function_name,
+        progress.function?.name,
+      );
+      if (!toolName) return null;
+
+      const phase = firstNonEmptyString(progress.phase, progress.status, progress.state)?.toLowerCase() || '';
+      const explicitCallId = firstNonEmptyString(
+        progress.toolCallId,
+        progress.tool_call_id,
+        progress.callId,
+        progress.call_id,
+        progress.id,
+      );
+
+      let callId = explicitCallId || toolProgressCallIdsByTool.get(toolName) || null;
+      if (!callId) {
+        syntheticToolCallCounter += 1;
+        callId = `call_progress_${syntheticToolCallCounter}`;
+      }
+
+      const terminalPhases = new Set([
+        'end',
+        'ended',
+        'completed',
+        'complete',
+        'done',
+        'error',
+        'failed',
+        'failure',
+        'cancelled',
+        'canceled',
+      ]);
+      if (terminalPhases.has(phase)) {
+        toolProgressCallIdsByTool.delete(toolName);
+      } else {
+        toolProgressCallIdsByTool.set(toolName, callId);
+      }
+
+      const toolArguments = stringifyToolArguments(
+        progress.arguments
+        ?? progress.args
+        ?? progress.input
+        ?? progress.arguments_preview
+        ?? progress.argument_preview
+        ?? progress.params
+        ?? null,
+      );
+
+      return {
+        id: callId,
+        name: toolName,
+        arguments: toolArguments,
+      };
+    };
+
     const forwardParsedEvents = (events) => {
       for (const event of events) {
         if (event.done) {
@@ -98,6 +183,24 @@ export function registerGatewayRoutes({
         }
 
         if (event.event === 'hermes.tool.progress') {
+          const toolCall = buildToolCallFromProgress(event.toolProgress ?? event.payload);
+          if (toolCall) {
+            writeData({
+              choices: [{
+                delta: {
+                  tool_calls: [{
+                    index: 0,
+                    id: toolCall.id,
+                    type: 'function',
+                    function: {
+                      name: toolCall.name,
+                      arguments: toolCall.arguments,
+                    },
+                  }],
+                },
+              }],
+            });
+          }
           writeEvent('hermes.tool.progress', event.toolProgress ?? event.payload ?? event.rawData);
           continue;
         }

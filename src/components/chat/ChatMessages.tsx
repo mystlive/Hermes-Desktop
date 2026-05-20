@@ -142,20 +142,24 @@ export function ChatMessages({
                 : 'px-1 py-0.5 text-foreground',
             )}>
               {(() => {
-                const isStreamingAssistant = streaming && index === messages.length - 1 && message.role === 'assistant';
-                const hasMessageText = String(message.content || '').trim().length > 0;
-                const isSpeaking = speakingMessageIndex === index;
-
-                return (
-                  <>
+	                const isStreamingAssistant = streaming && index === messages.length - 1 && message.role === 'assistant';
+	                const hasMessageText = String(message.content || '').trim().length > 0;
+	                const isSpeaking = speakingMessageIndex === index;
+	                const hasVisibleToolData = showTools && hasToolData(message);
+	                const showToolCallsBeforeContent = hasVisibleToolData && message.toolCallsBeforeContent !== false;
+	                const showToolCallsAfterContent = showTools && !showToolCallsBeforeContent && hasToolData(message);
+	
+	                return (
+	                  <>
                     {message.isVoice && (
                       <div className="mb-2 inline-flex items-center gap-1 rounded-full border border-border/40 bg-background/20 px-1.5 py-0.5 text-[10px] text-muted-foreground/80">
                         <Mic size={10} />
-                        Voice
-                      </div>
-                    )}
-                    <MessageContent content={message.content} showThinking={showThinking} />
-                    {showTools && hasToolData(message) && <ToolCallList message={message} />}
+	                        Voice
+	                      </div>
+	                    )}
+	                    {showToolCallsBeforeContent && <ToolCallList message={message} />}
+	                    <MessageContent content={message.content} showThinking={showThinking} />
+	                    {showToolCallsAfterContent && <ToolCallList message={message} />}
                     {message.audioUrl && (
                       <audio
                         controls
@@ -300,32 +304,32 @@ function ToolCallList({ message }: { message: Message }) {
       {toolCalls.map((toolCall, index) => {
         const toolName = toolCall.function?.name || toolCall.name || `tool ${index + 1}`;
         const argumentsText = stringifyToolPayload(toolCall.function?.arguments || toolCall.arguments);
-        return (
-          <div key={toolCall.id || `${toolName}_${index}`} className="rounded-lg border border-border/70 bg-background/40 px-3 py-2">
+	        return (
+	          <div key={toolCall.id || `${toolName}_${index}`} className="rounded-lg px-3 py-2">
             <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary">
               <KeyRound size={11} />
               <span>{toolName}</span>
             </div>
-            {argumentsText && (
-              <pre className="mt-2 whitespace-pre-wrap break-words rounded bg-background/60 px-2.5 py-2 text-[11px] text-muted-foreground/80">
+	            {argumentsText && (
+	              <pre className="mt-2 whitespace-pre-wrap break-words rounded bg-background/60 px-2.5 py-2 text-[11px] text-muted-foreground/80">
                 {argumentsText}
               </pre>
             )}
           </div>
         );
       })}
-      {!toolCalls.length && message.toolName && (
-        <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2">
+	      {!toolCalls.length && message.toolName && (
+	        <div className="rounded-lg px-3 py-2">
           <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary">
             <KeyRound size={11} />
             <span>{message.toolName}</span>
           </div>
         </div>
       )}
-      {resultText && (
-        <div className="rounded-lg border border-border/70 bg-background/40 px-3 py-2">
-          <div className="text-[11px] font-medium text-muted-foreground/80">Tool result</div>
-          <pre className="mt-2 whitespace-pre-wrap break-words rounded bg-background/60 px-2.5 py-2 text-[11px] text-muted-foreground/80">
+	      {resultText && (
+	        <div className="rounded-lg px-3 py-2">
+	          <div className="text-[11px] font-medium text-muted-foreground/80">Tool result</div>
+	          <pre className="mt-2 whitespace-pre-wrap break-words rounded bg-background/60 px-2.5 py-2 text-[11px] text-muted-foreground/80">
             {resultText}
           </pre>
         </div>
