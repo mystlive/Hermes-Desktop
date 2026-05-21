@@ -11,6 +11,10 @@ set "HERMES_CLI_PATH=/home/your-user/.local/bin/hermes"
 REM Optional explicit Hermes runtime home inside WSL for gateway commands.
 set "HERMES_WSL_HOME=/home/your-user/.hermes"
 
+REM Optional explicit WSL working directory for Hermes terminal tools.
+REM Keep this as a Linux path, not a \\wsl.localhost\... UNC path.
+set "HERMES_TERMINAL_CWD=/home/your-user/.hermes/hermes-builder"
+
 REM Optional explicit Hermes runtime home for the Windows-side backend.
 REM Keep the UNC path aligned with HERMES_WSL_DISTRO.
 set "HERMES_HOME=\\wsl.localhost\Ubuntu\home\your-user\.hermes"

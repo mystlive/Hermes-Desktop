@@ -47,6 +47,7 @@ class GatewayProcessManager {
     const bashCommand = [
       'set -e',
       wslHome ? `export HERMES_HOME=${quoteBash(wslHome)}` : '',
+      'if [ -z "${TERMINAL_CWD:-}" ]; then if [ -n "${HERMES_TERMINAL_CWD:-}" ]; then export TERMINAL_CWD="$HERMES_TERMINAL_CWD"; elif [ -n "${HERMES_HOME:-}" ] && [ -d "$HERMES_HOME/hermes-builder" ]; then export TERMINAL_CWD="$HERMES_HOME/hermes-builder"; else export TERMINAL_CWD="$HOME"; fi; fi',
       'HERMES_BIN="${HERMES_CLI_PATH:-$(command -v hermes || true)}"',
       'if [ -z "$HERMES_BIN" ] && [ -x "$HOME/.local/bin/hermes" ]; then HERMES_BIN="$HOME/.local/bin/hermes"; fi',
       'if [ -z "$HERMES_BIN" ]; then echo "Hermes CLI not found in WSL" >&2; exit 127; fi',
